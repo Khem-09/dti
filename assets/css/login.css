@@ -1,0 +1,100 @@
+.custom-navbar {  
+    background-color: #0C0439 !important;
+}
+.navbar {
+    color: var(--white);
+    padding: 15px 0;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+}
+.navbar-container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    max-width: 1200px;
+    margin: 0 ;
+    padding: 0 ;
+}
+.navbar-brand {
+    display: flex;
+    align-items: center;
+    text-decoration: none;
+    color: var(--white);
+    font-size: 24px;
+    font-weight: 700;
+}
+.navbar-brand img {
+    height: 40px;
+    margin-right: 10px;
+    border-radius: 20px;
+}
+.navbar-nav {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+}
+.nav-item {
+    margin-left: 30px;
+}
+.nav-link {
+    color: var(--white);
+    text-decoration: none;
+    font-weight: 500;
+    transition: color 0.3s ease;
+}
+.nav-link:hover {
+    color: rgba(255, 255, 255, 0.8);
+}
+
+.login-background {
+    background-image: url('assets/images/bg 1.png');
+    background: linear-gradient(rgba(0, 0, 0, 0.4), rgba(0, 0, 0, 0.4)), 
+                url('assets/images/bg 1.png'); 
+    background-size: cover;
+    background-position: center;
+    background-attachment: fixed;
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+.login-card {
+    width: 100%;
+    max-width: 450px;
+    border-radius: 12px;
+    border: none;
+    border-top: 5px solid #0c0439;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+}
+
+.btn:hover {
+    background-color: #15154d;
+    color: white;
+    transform: translateY(-2px);
+}
+.form-control {
+    border-radius: 4px;
+    padding: 12px;
+    background-color: #f8f9fa;
+    border: 1px solid #ddd;
+}
+.form-control:focus {
+    box-shadow: none;
+    border-color: #0A0A3A;
+    background-color: #fff;
+}
+
+.footer{
+    background-color: #0C0439 !important;   
+    color: white;
+    padding: 15px 0;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+    align-items: center;
+    text-align: center
+}

@@ -1,0 +1,16 @@
+body { background-color: #f8f9fa; overflow-x: hidden; }
+.sidebar { background-color: #0A0A3A; min-height: 100vh; }
+.sidebar-brand { color: #0033A0; font-weight: 800; font-size: 1.5rem; }
+.sidebar-brand span { color: #0A0A3A; }
+.nav-link { color: white; margin-bottom: 5px; border-radius: 5px; }
+.nav-link:hover, .nav-link.active { background-color: rgba(255,255,255,0.1); border-left: 4px solid white; }
+.card-custom-orange { background-color: #F4A261; }
+.card-custom-green { background-color: #A7D89D; }
+.card-custom-purple { background-color: #A28DF5; }
+.table-wrapper { background-color: #e9ecef; border-radius: 8px; padding: 15px; min-height: 200px; }
+
+.btn-action { border: none; padding: 4px 10px; border-radius: 4px; color: rgb(0, 0, 0); font-size: 11px; display: block; margin-bottom: 5px; width: 75px; font-weight: bold; }
+.btn-view { background-color: #bfa900; }
+.btn-generate { background-color: #49d649; }
+.btn-export { background-color: #107ed9; }
+.btn-delete { background-color: #f03c3c; }
