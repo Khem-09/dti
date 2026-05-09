@@ -127,7 +127,11 @@ try {
 
         $original_filename = basename($_FILES["excel_file"]["name"]);
         $fallback_province = $_POST['province_id'] ?? 1;
-        $target_year = $_POST['target_year'] ?? date('Y');
+        
+        // FIX: Replaced date('Y') with NULL/empty check to prevent forcing '2026' into the DB prematurely. 
+        // The real target year gets written properly below inside the 'save_chunk' process directly from the Excel data.
+        $target_year = !empty($_POST['target_year']) ? $_POST['target_year'] : null;
+        
         $final_province_id = detectProvinceId($original_filename, $fallback_province);
         
         $clean_filename = time() . "_" . preg_replace("/[^a-zA-Z0-9.\-_]/", "", $original_filename);

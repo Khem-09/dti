@@ -21,7 +21,8 @@
     $admin_last = $adminRow['lastname'] ?? '';
 
     $availableYears = $admin->getAvailableYears();
-    $latest_db_year = (count($availableYears) > 0) ? $availableYears[0]['year'] : date('Y');
+    // FIX: Removed the date('Y') fallback to prevent a phantom 2026 option when DB is empty.
+    $latest_db_year = (count($availableYears) > 0) ? $availableYears[0]['year'] : ''; 
     
     $filter_year = isset($_GET['year']) ? $_GET['year'] : $latest_db_year;
     $filter_month = isset($_GET['month']) ? $_GET['month'] : '';
