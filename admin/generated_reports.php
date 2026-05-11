@@ -43,8 +43,14 @@
     $target_sheet = isset($_GET['sheet']) ? $_GET['sheet'] : null;
 
     $previewData = [];
+    $preview_file_path = ''; // Added to store file path for export button in part 2
     if ($part == 2 && isset($_GET['report_id'])) {
         $previewData = $admin->getReportPreview($_GET['report_id'], $target_sheet);
+        
+        // Fetch file path for export
+        $stmtFilePath = $db->prepare("SELECT file_path FROM generated_reports WHERE id = ?");
+        $stmtFilePath->execute([$_GET['report_id']]);
+        $preview_file_path = $stmtFilePath->fetchColumn();
     }
 
     $filter_type = isset($_GET['type']) ? $_GET['type'] : 'All';
@@ -232,6 +238,11 @@
                                     <option value="250">250 rows</option>
                                     <option value="500">500 rows</option>
                                 </select>
+                                <?php if (!empty($preview_file_path)): ?>
+                                <a href="#" onclick="confirmExportLink(event, '../uploads/reports/<?= htmlspecialchars($preview_file_path) ?>')" class="btn btn-primary btn-sm fw-bold shadow-sm px-3 ms-2" style="height: 31px; display: inline-flex; align-items: center;">
+                                    <i class="bi bi-download me-1"></i> Export
+                                </a>
+                                <?php endif; ?>
                             </div>
                         </div>
                         <div class="red-line mb-4" style="height: 3px; background-color: #8B0000; width: 100%;"></div>

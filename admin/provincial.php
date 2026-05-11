@@ -410,9 +410,9 @@
                             </button>
                         </div>
 
-                        <div class="table-responsive bg-white shadow-sm rounded border">
+                        <div class="table-responsive bg-white shadow-sm rounded border" style="max-height: 550px; overflow-y: auto;">
                             <table class="table table-hover align-middle mb-0 text-nowrap" id="reportTable">
-                                <thead class="table-light">
+                                <thead class="table-light sticky-top" style="z-index: 2;">
                                     <tr style="border-bottom: 2px solid #8B0000;">
                                         <th class="fw-bold text-secondary text-center" style="width: 50px;">#</th>
                                         <th class="fw-bold text-secondary">Type</th>
@@ -572,17 +572,12 @@
         let currentPage = 1;
         let rowsPerPage = 50;
 
-        // ==================================================
-        // NEW UTILITY: CONVERT EXCEL SERIAL DATES TO TEXT
-        // ==================================================
         function formatIfExcelDate(val) {
             if (val === null || val === undefined || val === '') return val;
             let strVal = String(val).trim();
-            // Match exactly 5 digits. Excel dates from roughly 1982 to 2078 fall between 30000 and 65000.
             if (/^\d{5}$/.test(strVal)) {
                 let num = parseInt(strVal, 10);
                 if (num >= 30000 && num <= 65000) {
-                    // Excel epoch offset is 25569 days to Javascript's epoch
                     let jsDate = new Date(Math.round((num - 25569) * 86400 * 1000));
                     let mNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
                     return `${mNames[jsDate.getMonth()]} ${jsDate.getDate()}, ${jsDate.getFullYear()}`;
@@ -761,8 +756,6 @@
                         
                         let textColorClass = "";
                         
-                        // --- NEW LOGIC: DETECT EXCLUDED COLUMNS (MIN, MAX, AVERAGE, MODE) ---
-                        // We safely check the current row and the 2 rows above it to find column titles like "AVERAGE"
                         let colHeadStr = "";
                         if (hRow >= 0 && rawPreviewData[hRow] && rawPreviewData[hRow][c]) colHeadStr = String(rawPreviewData[hRow][c]).trim().toUpperCase();
                         if (!colHeadStr && hRow - 1 >= 0 && rawPreviewData[hRow - 1] && rawPreviewData[hRow - 1][c]) colHeadStr = String(rawPreviewData[hRow - 1][c]).trim().toUpperCase();
@@ -773,9 +766,7 @@
                             isExcludedCol = ['MIN', 'MAX', 'MODE', 'AVERAGE', 'NAN'].some(kw => colHeadStr.includes(kw));
                         }
                         
-                        // Treat it as a store column ONLY if it's not one of those aggregate columns
                         let isStoreCol = (c >= storeStartCol) && !isExcludedCol;
-                        // --------------------------------------------------------------------
                         
                         if (isStoreCol && srpRaw !== null && !isNaN(srpRaw) && cellStr !== "") {
                             let priceRaw = parseFloat(cellStr.replace(/[^0-9.]/g, ''));
@@ -1050,24 +1041,26 @@
             });
         }
 
-        document.getElementById('fileInput').addEventListener('change', async function(e) {
+        // =====================================================================
+        // NEW FILE UPLOAD HANDLER: JS EXTRACTS SRP DATE & SENDS CHUNKS (FAST)
+        // =====================================================================
+        document.getElementById('fileInput')?.addEventListener('change', function(e) {
             let file = e.target.files[0];
             if(!file) return;
 
             document.getElementById('uploadStatus').classList.remove('d-none');
             const statusText = document.getElementById('statusText');
 
-            try {
-                statusText.innerText = "Step 1: Uploading file...";
-                let formData = new FormData(document.getElementById('uploadForm'));
-                formData.append('action', 'upload_file_only');
-                
-                let yearMatch = file.name.match(/(20\d{2})/);
-                if(yearMatch) formData.set('target_year', yearMatch[1]);
-                
-                let uploadRes = await fetch('ajax_handler.php', { method: 'POST', body: formData });
-                let uploadData = await uploadRes.json();
-
+            statusText.innerText = "Step 1: Uploading file...";
+            let formData = new FormData(document.getElementById('uploadForm'));
+            formData.append('action', 'upload_file_only');
+            
+            let yearMatch = file.name.match(/(20\d{2})/);
+            if(yearMatch) formData.set('target_year', yearMatch[1]);
+            
+            fetch('ajax_handler.php', { method: 'POST', body: formData })
+            .then(res => res.json())
+            .then(uploadData => {
                 if(uploadData.status !== 'success') {
                     alert("Upload Error: " + (uploadData.message || "Unknown server error."));
                     location.reload(); return;
@@ -1082,12 +1075,12 @@
                         const data = new Uint8Array(e.target.result);
                         const workbook = XLSX.read(data, {type: 'array'});
                         let allFlatData = [];
+                        let extractedSrpDate = null; 
 
                         workbook.SheetNames.forEach(sheetName => {
                             let sn = sheetName.toLowerCase();
                             if(sn.includes('instruction') || sn.includes('summary')) return;
                             
-                            // MAGIC FIX: raw: false forces Excel dates to become readable strings
                             const sheet = workbook.Sheets[sheetName];
                             const jData = XLSX.utils.sheet_to_json(sheet, {
                                 header: 1, 
@@ -1102,7 +1095,27 @@
                                 if (!jData[i]) continue;
                                 let str = jData[i].join(" ").toUpperCase();
                                 if(str.includes("COMMODITY") || str.includes("BRAND") || str.includes("SPECIFICATION")) {
-                                    hRow = i; break; 
+                                    hRow = i; 
+                                    
+                                    // --- NEW, BULLETPROOF REGEX DATE EXTRACTION ---
+                                    if (!extractedSrpDate) { 
+                                        for(let c=0; c < jData[i].length; c++) {
+                                            let val = String(jData[i][c] || "").trim();
+                                            if(val.toUpperCase().includes("SRP")) {
+                                                // Hunts for patterns like "01 FEB 2025" or "FEB 01, 2025" anywhere in the cell
+                                                let dateMatch = val.match(/(\d{1,2}\s+[a-zA-Z]{3,}\s+\d{4}|[a-zA-Z]{3,}\s+\d{1,2},?\s+\d{4})/);
+                                                if (dateMatch) {
+                                                    let d = new Date(dateMatch[0]);
+                                                    if (!isNaN(d)) {
+                                                        extractedSrpDate = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+                                                        break; 
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // ----------------------------------------------
+                                    break; 
                                 }
                             }
                             if(hRow === -1) return; 
@@ -1130,24 +1143,18 @@
                             let globalMonth = "Unknown";
                             let globalWeek = 1;
 
-                            // 1. Check filename for month
                             let fileMonthMatch = file.name.match(/\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\b/i);
                             if (fileMonthMatch) globalMonth = normalizeMonth(fileMonthMatch[1]);
 
-                            // 2. Check sheet name for month
                             let sheetMonthMatch = sheetName.match(/\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\b/i);
                             if (sheetMonthMatch) globalMonth = normalizeMonth(sheetMonthMatch[1]);
 
-                            // 3. Scan the entire header section
                             for(let sR = 0; sR <= hRow; sR++) {
                                 for(let scanC = 0; scanC < jData[sR].length; scanC++) {
                                     let cellTxt = (jData[sR][scanC] || "").toString().trim();
                                     if(!cellTxt) continue;
                                     
-                                    // NEW: Ignore cells containing 'PRICE FREEZE' so it doesn't hijack the target date
                                     if(cellTxt.toUpperCase().includes("PRICE FREEZE")) continue;
-                                    
-                                    cellTxt = formatIfExcelDate(cellTxt); // Safely convert serial numbers back to readable strings
                                     
                                     let yMatch = cellTxt.match(/\b(20[2-3]\d)\b/);
                                     if(yMatch) globalYear = parseInt(yMatch[1]);
@@ -1217,8 +1224,6 @@
                                 if (!st && hRow - 1 >= 0 && jData[hRow - 1][c]) st = jData[hRow - 1][c].toString().trim();
                                 if (!st && hRow - 2 >= 0 && jData[hRow - 2][c]) st = jData[hRow - 2][c].toString().trim();
 
-                                st = formatIfExcelDate(st);
-
                                 if(!st || ['MIN','MAX','MODE','AVERAGE','NAN'].includes(st.toUpperCase()) || st.toUpperCase().includes('WEEK')) {
                                     emptyCols++;
                                     if (emptyCols > 10) break; 
@@ -1238,10 +1243,7 @@
                                     let cTxt = (jData[sR][c] || "").toString().trim();
                                     if (!cTxt) continue;
 
-                                    // NEW: Ignore cells containing 'PRICE FREEZE' for specific store columns
                                     if(cTxt.toUpperCase().includes("PRICE FREEZE")) continue;
-
-                                    cTxt = formatIfExcelDate(cTxt); // Safely convert serial numbers back to readable strings
 
                                     let yMatch = cTxt.match(/\b(20[2-3]\d)\b/);
                                     if(yMatch) { tempYear = parseInt(yMatch[1]); foundDateInfo = true; }
@@ -1373,57 +1375,62 @@
                             location.reload(); return;
                         }
 
-                        let chunkSize = 1000; 
+                        let chunkSize = 250; 
                         let totalChunks = Math.ceil(allFlatData.length / chunkSize);
                         let hasError = false;
                         
-                        for(let i=0; i < allFlatData.length; i += chunkSize) {
-                            let currentChunk = Math.floor(i/chunkSize) + 1;
-                            statusText.innerText = `Step 3: Saving batch ${currentChunk} of ${totalChunks} to database...`;
-                            
-                            let chunk = allFlatData.slice(i, i+chunkSize);
-                            let saveRes = await fetch('ajax_handler.php', {
-                                method: 'POST',
-                                headers: {'Content-Type': 'application/json'},
-                                body: JSON.stringify({
-                                    action: 'save_chunk',
-                                    file_id: uploadData.file_id,
-                                    province_id: uploadData.province_id,
-                                    data: chunk
-                                })
-                            });
-                            
-                            let saveData = await saveRes.json();
-                            
-                            if(saveData.status !== 'success') {
-                                alert("Database Error Details:\n" + saveData.message);
-                                hasError = true;
-                                break;
+                        async function saveChunksSequentially() {
+                            for(let i=0; i < allFlatData.length; i += chunkSize) {
+                                let currentChunk = Math.floor(i/chunkSize) + 1;
+                                statusText.innerText = `Step 3: Saving batch ${currentChunk} of ${totalChunks} to database...`;
+                                
+                                let chunk = allFlatData.slice(i, i+chunkSize);
+                                let saveRes = await fetch('ajax_handler.php', {
+                                    method: 'POST',
+                                    headers: {'Content-Type': 'application/json'},
+                                    body: JSON.stringify({
+                                        action: 'save_chunk',
+                                        file_id: uploadData.file_id,
+                                        province_id: uploadData.province_id,
+                                        srp_date_label: extractedSrpDate,
+                                        data: chunk
+                                    })
+                                });
+                                
+                                let saveData = await saveRes.json();
+                                
+                                if(saveData.status !== 'success') {
+                                    alert("Database Error Details:\n" + saveData.message);
+                                    hasError = true;
+                                    break;
+                                }
+                            }
+
+                            if (!hasError) {
+                                document.getElementById('spinnerIcon').classList.remove('spin');
+                                document.getElementById('spinnerIcon').classList.replace('bi-arrow-repeat', 'bi-check-circle');
+                                statusText.innerText = `Success! Fully extracted and saved ${allFlatData.length} records. Reloading...`;
+                                setTimeout(() => { window.location.reload(); }, 1500);
+                            } else {
+                                statusText.innerText = `Extraction failed. Check the alert box.`;
+                                document.getElementById('spinnerIcon').classList.remove('spin');
+                                document.getElementById('spinnerIcon').classList.replace('bi-arrow-repeat', 'bi-exclamation-triangle-fill');
                             }
                         }
-
-                        if (!hasError) {
-                            document.getElementById('spinnerIcon').classList.remove('spin');
-                            document.getElementById('spinnerIcon').classList.replace('bi-arrow-repeat', 'bi-check-circle');
-                            statusText.innerText = `Success! Fully extracted and saved ${allFlatData.length} records. Reloading...`;
-                            setTimeout(() => { window.location.reload(); }, 1500);
-                        } else {
-                            statusText.innerText = `Extraction failed. Check the alert box.`;
-                            document.getElementById('spinnerIcon').classList.remove('spin');
-                            document.getElementById('spinnerIcon').classList.replace('bi-arrow-repeat', 'bi-exclamation-triangle-fill');
-                        }
+                        
+                        saveChunksSequentially();
 
                     };
                     reader.readAsArrayBuffer(file);
                 }, 100);
-                
-            } catch(error) {
+            })
+            .catch(error => {
                 alert("Upload process failed. Check console.");
                 console.error(error);
                 location.reload();
-            }
+            });
         });
-        
+
         function updateAdminProfile(e) {
             e.preventDefault();
             showConfirmModal('Update Profile', 'Are you sure you want to save these profile changes?', 'dark', '<i class="bi bi-check-circle"></i> Save Changes', async function() {
@@ -1486,4 +1493,4 @@
         }
     </script>
 </body>
-</html> 
+</html>

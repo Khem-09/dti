@@ -21,6 +21,7 @@
             $this->conn->exec("SET time_zone = '+08:00'");
             $this->conn->exec("SET SESSION innodb_lock_wait_timeout = 10"); 
             $this->conn->exec("SET SESSION wait_timeout = 10");
+            $this->conn->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         } catch (PDOException $e) {
             echo "Connection Error: " . $e->getMessage();
             error_log("Database connection failed: " . $e->getMessage());

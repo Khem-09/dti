@@ -63,14 +63,6 @@ if (isset($_SESSION['admin_id']) && isset($_SESSION['logged_in'])) {
                 </div>
             </div>
 
-            <div class="d-flex justify-content-between align-items-center mb-4">
-                <div class="form-check">
-                    <input class="form-check-input" type="checkbox" id="rememberMe" name="rememberMe">
-                    <label class="form-check-label small text-secondary" for="rememberMe">Remember me</label>
-                </div>
-                <a href="#" class="small text-decoration-none fw-bold" style="color: #8B0000;">Forgot Password?</a>
-            </div>
-
             <button type="submit" class="btn btn-login w-100 mb-3 shadow-sm" style="background-color: #0A0A3A;color: white; font-weight: bold; border-radius: 4px; padding: 12px; transition: 0.3s;">
                 LOG IN
             </button>

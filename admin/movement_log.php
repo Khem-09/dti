@@ -158,6 +158,8 @@
                                     <option value="<?= htmlspecialchars($cat) ?>"><?= htmlspecialchars($cat) ?></option>
                                 <?php endforeach; ?>
                             </select>
+
+                            <button class="btn btn-sm btn-outline-secondary shadow-sm" onclick="clearFilters()" title="Clear Filters"><i class="bi bi-x-circle"></i></button>
                         </div>
                     </div>
 
@@ -320,6 +322,15 @@
             rowsPerPage = parseInt(document.getElementById('rowsPerPage').value);
             currentPage = 1;
             renderTable();
+        }
+
+        // --- NEW CLEAR FILTERS FUNCTION ---
+        function clearFilters() {
+            document.getElementById('fromDate').value = '';
+            document.getElementById('toDate').value = '';
+            document.getElementById('typeFilter').value = 'All';
+            document.getElementById('catFilter').value = 'All';
+            filterLogs();
         }
 
         function filterLogs() {

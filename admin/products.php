@@ -29,6 +29,27 @@
         }
     }
     sort($categories);
+
+    // Fetch the most recent extracted SRP date to use as the default Masterlist "As Of" date
+    $defaultExportDate = date('Y-m-d');
+    try {
+        $stmtLatestDate = $db->query("SELECT srp_date_label FROM uploaded_files WHERE srp_date_label IS NOT NULL ORDER BY id DESC LIMIT 1");
+        if ($stmtLatestDate) {
+            $latestDate = $stmtLatestDate->fetchColumn();
+            if ($latestDate) {
+                $defaultExportDate = $latestDate;
+            } else {
+                $stmtFallback = $db->query("SELECT DATE(uploaded_at) FROM uploaded_files ORDER BY uploaded_at DESC LIMIT 1");
+                $fallbackDate = $stmtFallback ? $stmtFallback->fetchColumn() : false;
+                if ($fallbackDate) $defaultExportDate = $fallbackDate;
+            }
+        }
+    } catch (Exception $e) {
+        // Safe fallback for older database versions without the new column
+        $stmtFallback = $db->query("SELECT DATE(uploaded_at) FROM uploaded_files ORDER BY uploaded_at DESC LIMIT 1");
+        $fallbackDate = $stmtFallback ? $stmtFallback->fetchColumn() : false;
+        if ($fallbackDate) $defaultExportDate = $fallbackDate;
+    }
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -213,8 +234,8 @@
                 <div class="modal-body p-4">
                     <form id="exportForm" onsubmit="exportMasterlist(event)">
                         <div class="mb-4">
-                            <label class="form-label fw-bold text-secondary">Date for the SRP (Adjusted)</label>
-                            <input type="date" id="exportSrpDate" class="form-control bg-light border-0 shadow-sm" required>
+                            <label class="form-label fw-bold text-secondary">Masterlist As Of Date</label>
+                            <input type="date" id="exportSrpDate" class="form-control bg-light border-0 shadow-sm" value="<?= htmlspecialchars($defaultExportDate) ?>" required>
                         </div>
                         <div class="d-flex justify-content-end gap-2 mt-4 pt-3 border-top">
                             <button type="button" class="btn btn-outline-secondary shadow-sm px-4" data-bs-dismiss="modal"><i class="bi bi-x-circle"></i> Cancel</button>

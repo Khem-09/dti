@@ -127,17 +127,14 @@ try {
 
         $original_filename = basename($_FILES["excel_file"]["name"]);
         $fallback_province = $_POST['province_id'] ?? 1;
-        
-        // FIX: Replaced date('Y') with NULL/empty check to prevent forcing '2026' into the DB prematurely. 
-        // The real target year gets written properly below inside the 'save_chunk' process directly from the Excel data.
         $target_year = !empty($_POST['target_year']) ? $_POST['target_year'] : null;
-        
         $final_province_id = detectProvinceId($original_filename, $fallback_province);
         
         $clean_filename = time() . "_" . preg_replace("/[^a-zA-Z0-9.\-_]/", "", $original_filename);
         $target_file = $target_dir . $clean_filename;
 
         if (move_uploaded_file($_FILES["excel_file"]["tmp_name"], $target_file)) {
+            // PHP NO LONGER PARSES THE EXCEL FILE HERE. IT IS INSTANT.
             $stmt = $conn->prepare("INSERT INTO uploaded_files (province_id, target_year, original_filename) VALUES (?, ?, ?)");
             $stmt->execute([$final_province_id, $target_year, $clean_filename]);
             
@@ -273,22 +270,28 @@ try {
     if (isset($request['action']) && $request['action'] === 'save_chunk') {
         $file_id = $request['file_id'];
         $province_id = $request['province_id'];
+        $srp_date_label = isset($request['srp_date_label']) ? $request['srp_date_label'] : null;
         $chunk = $request['data'];
 
+        // --- UPDATE YEAR AND EXTRACTED SRP DATE ---
         if (count($chunk) > 0 && !empty($chunk[0]['year'])) {
             $actual_year = $chunk[0]['year'];
-            $stmtUpdateYear = $conn->prepare("UPDATE uploaded_files SET target_year = ? WHERE id = ?");
-            $stmtUpdateYear->execute([$actual_year, $file_id]);
+            if ($srp_date_label) {
+                $stmtUpdate = $conn->prepare("UPDATE uploaded_files SET target_year = ?, srp_date_label = ? WHERE id = ?");
+                $stmtUpdate->execute([$actual_year, $srp_date_label, $file_id]);
+            } else {
+                $stmtUpdate = $conn->prepare("UPDATE uploaded_files SET target_year = ? WHERE id = ?");
+                $stmtUpdate->execute([$actual_year, $file_id]);
+            }
+        } elseif ($srp_date_label) {
+            $stmtUpdate = $conn->prepare("UPDATE uploaded_files SET srp_date_label = ? WHERE id = ?");
+            $stmtUpdate->execute([$srp_date_label, $file_id]);
         }
 
         $conn->beginTransaction();
 
         try {
-            // =========================================================================
             // MASSIVE SPEED OPTIMIZATION: THE "IN-MEMORY DICTIONARY" METHOD
-            // =========================================================================
-            // Instead of pinging the database thousands of times to check if items exist,
-            // we download all items into PHP RAM once.
             $stores = []; $periods = []; $types = []; $cats = []; $brands = []; $prods = []; $variants = [];
 
             // Load Existing Masterlists into Memory
@@ -376,11 +379,7 @@ try {
                 $periodIdsForChunk[$period_id] = $period_id;
             }
 
-            // =========================================================================
-            // BULK PRICE INSERTION (The Ultimate Speed Fix)
-            // =========================================================================
-            // Pre-load all existing prices for the exact weeks/periods we are uploading.
-            // This eliminates doing 1000 SELECT queries per chunk.
+            // BULK PRICE INSERTION 
             $existingPrices = [];
             if (!empty($periodIdsForChunk)) {
                 $in = str_repeat('?,', count($periodIdsForChunk) - 1) . '?';
@@ -399,23 +398,19 @@ try {
             foreach ($mappedRecords as $rec) {
                 $k = $rec['variant_id'].'_'.$rec['store_id'].'_'.$rec['period_id'];
                 if (isset($existingPrices[$k])) {
-                    // Update existing price record
                     if ($rec['price'] !== null) { 
                         $updPrice->execute([$rec['price'], $rec['file_id'], $existingPrices[$k]]); 
                     }
                 } else {
-                    // Stage for Mass Bulk Insert
                     $insertPlaceholders[] = "(?, ?, ?, ?, ?)";
                     array_push($insertParams, $rec['file_id'], $rec['variant_id'], $rec['store_id'], $rec['period_id'], $rec['price']);
-                    
-                    // Mark as existing so duplicate columns in the same chunk don't clash
                     $existingPrices[$k] = 'pending_insert'; 
                 }
             }
 
-            // Execute the Massive Single Query (Inserts up to 500 records instantly)
+            // Execute the Massive Single Query (LOWERED TO 100 TO PREVENT MAX PACKET CRASH)
             if (!empty($insertPlaceholders)) {
-                $chunkSizeLimit = 500; 
+                $chunkSizeLimit = 100; // Adjusted for extreme safety
                 $chunkedPlaceholders = array_chunk($insertPlaceholders, $chunkSizeLimit);
                 $chunkedParams = array_chunk($insertParams, $chunkSizeLimit * 5); 
                 
@@ -447,32 +442,28 @@ try {
         $old = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if ($old) {
-            $conn->exec("CREATE TABLE IF NOT EXISTS product_history (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                variant_id INT,
-                old_name VARCHAR(255),
-                new_name VARCHAR(255),
-                old_specs VARCHAR(255),
-                new_specs VARCHAR(255),
-                old_srp DECIMAL(10,2),
-                new_srp DECIMAL(10,2),
-                changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )");
-
             if ($old['product_name'] != $new_name || $old['specifications'] != $new_specs || $old['srp'] != $new_srp) {
-                $histStmt = $conn->prepare("INSERT INTO product_history (variant_id, old_name, new_name, old_specs, new_specs, old_srp, new_srp) VALUES (?, ?, ?, ?, ?, ?, ?)");
-                $histStmt->execute([
-                    $variant_id, 
-                    $old['product_name'], $new_name, 
-                    $old['specifications'], $new_specs, 
-                    $old['srp'], $new_srp
-                ]);
+                $conn->beginTransaction();
+                try {
+                    $histStmt = $conn->prepare("INSERT INTO product_history (variant_id, old_name, new_name, old_specs, new_specs, old_srp, new_srp) VALUES (?, ?, ?, ?, ?, ?, ?)");
+                    $histStmt->execute([
+                        $variant_id, 
+                        $old['product_name'], $new_name, 
+                        $old['specifications'], $new_specs, 
+                        $old['srp'], $new_srp
+                    ]);
 
-                $updProd = $conn->prepare("UPDATE products SET product_name = ? WHERE id = ?");
-                $updProd->execute([$new_name, $product_id]);
+                    $updProd = $conn->prepare("UPDATE products SET product_name = ? WHERE id = ?");
+                    $updProd->execute([$new_name, $product_id]);
 
-                $updVar = $conn->prepare("UPDATE product_variants SET specifications = ?, srp = ? WHERE id = ?");
-                $updVar->execute([$new_specs, $new_srp, $variant_id]);
+                    $updVar = $conn->prepare("UPDATE product_variants SET specifications = ?, srp = ? WHERE id = ?");
+                    $updVar->execute([$new_specs, $new_srp, $variant_id]);
+                    
+                    $conn->commit();
+                } catch (Exception $e) {
+                    $conn->rollBack();
+                    ob_end_clean(); echo json_encode(['status' => 'error', 'message' => $e->getMessage()]); exit();
+                }
             }
         }
         ob_end_clean();
@@ -536,6 +527,16 @@ try {
 
             $insVar = $conn->prepare("INSERT INTO product_variants (product_id, specifications, srp) VALUES (?, ?, ?)");
             $insVar->execute([$product_id, $specifications, $srp]);
+            $variant_id = $conn->lastInsertId(); 
+
+            // --- INITIAL ADDITION LOG ---
+            $histStmt = $conn->prepare("INSERT INTO product_history (variant_id, old_name, new_name, old_specs, new_specs, old_srp, new_srp) VALUES (?, ?, ?, ?, ?, ?, ?)");
+            $histStmt->execute([
+                $variant_id, 
+                '[New Entry]', $product_name, 
+                '[New Entry]', $specifications, 
+                null, $srp
+            ]);
 
             $conn->commit();
             ob_end_clean();
@@ -555,7 +556,6 @@ try {
         $conn->beginTransaction();
         try {
             $conn->prepare("DELETE FROM price_records WHERE variant_id = ?")->execute([$variant_id]);
-            $conn->exec("CREATE TABLE IF NOT EXISTS product_history (id INT AUTO_INCREMENT PRIMARY KEY, variant_id INT)");
             $conn->prepare("DELETE FROM product_history WHERE variant_id = ?")->execute([$variant_id]);
             $conn->prepare("DELETE FROM product_variants WHERE id = ?")->execute([$variant_id]);
 

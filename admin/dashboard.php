@@ -348,7 +348,7 @@
                     </div>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
-                <div class="modal-bodyp-4">
+                <div class="modal-body p-4">
                         <div class="mb-4">
                             <button type="button" class="btn btn-success fw-bold px-3 shadow-sm" style="border-radius: 6px;" onclick="openAddUserModal()"><i class="bi bi-person-plus me-1"></i> Add New Admin</button>
                         </div>
@@ -372,7 +372,9 @@
             </div>
         </div>
     </div>
-    <div class="modal fade id="universalConfirmModal" tabindex="-1" aria-hidden="true" style="z-index: 1060;">
+
+    <!-- THIS IS THE MODAL THAT WAS FIXED -->
+    <div class="modal fade" id="universalConfirmModal" tabindex="-1" aria-hidden="true" style="z-index: 1060;">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content" style="border-radius: 12px; border-top: 5px solid #0A0A3A;">
                 <div class="modal-header border-0 pb-0">

@@ -3,8 +3,6 @@ session_start();
 require_once 'classes/database.php';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // We keep htmlspecialchars for username, but remove it from password 
-    // so special characters in passwords don't break during the hash verification.
     $username = htmlspecialchars(trim($_POST['username'] ?? ''));
     $password = htmlspecialchars(trim($_POST['password'] ?? ''));
 
