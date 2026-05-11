@@ -69,6 +69,7 @@
         .btn-action:hover { transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.15) !important; }
         .btn-action i { font-size: 1.05rem; }
         .dropdown-toggle::after { vertical-align: middle; }
+        #previewTable th { border: 1px solid #4a5056 !important; }
     </style>
 </head>
 <body style="background-color: #EAEAEA; overflow-x: hidden;">
@@ -167,7 +168,7 @@
                                 
                                 <input type="date" id="filterDate" class="form-control form-control-sm border shadow-sm fw-bold text-secondary flex-grow-1" onchange="filterReports()" style="min-width: 140px; max-width: 180px;">
                                 
-                                <button class="btn btn-sm btn-outline-secondary btn-action shadow-sm" onclick="clearFilters()" title="Clear Filters"><i class="bi bi-x-circle"></i></button>
+                                <button class="btn btn-sm btn-outline-secondary shadow-sm" onclick="clearFilters()" title="Clear Filters"><i class="bi bi-x-circle"></i></button>
                             </div>
                         </div>
                     
@@ -221,6 +222,17 @@
                                 <a href="generated_reports.php?part=1" class="text-dark text-decoration-none"><i class="bi bi-arrow-left fs-4"></i></a> 
                                 <h3 class="m-0 fw-bold" style="color: #8B0000;">Report Preview</h3>
                             </div>
+                            
+                            <div class="d-flex align-items-center gap-2">
+                                <span class="fw-bold text-secondary small">Rows per page:</span>
+                                <select id="previewRowsPerPage" class="form-select form-select-sm border shadow-sm fw-bold text-secondary" onchange="changePreviewRowsPerPage()" style="width: 100px;">
+                                    <option value="25">25 rows</option>
+                                    <option value="50" selected>50 rows</option>
+                                    <option value="100">100 rows</option>
+                                    <option value="250">250 rows</option>
+                                    <option value="500">500 rows</option>
+                                </select>
+                            </div>
                         </div>
                         <div class="red-line mb-4" style="height: 3px; background-color: #8B0000; width: 100%;"></div>
 
@@ -245,33 +257,26 @@
 
                                 <div class="table-responsive border rounded" style="max-height: 550px;">
                                     <?php if (!empty($previewData['data'])): ?>
-                                        <table class="table table-bordered table-hover table-sm text-nowrap align-middle mb-0" style="font-size: 0.85rem;">
-                                            <?php foreach ($previewData['data'] as $index => $row): ?>
-                                                <?php if ($index === 0): ?>
-                                                    <thead class="table-dark sticky-top">
-                                                        <tr>
-                                                            <th class="text-center" style="width: 40px;">#</th>
-                                                            <?php foreach ($row as $cell): ?>
-                                                                <th><?= htmlspecialchars((string)$cell) ?></th>
-                                                            <?php endforeach; ?>
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody>
-                                                <?php else: ?>
-                                                    <tr>
-                                                        <td class="text-center fw-bold bg-light text-secondary"><?= $index ?></td>
-                                                        <?php foreach ($row as $cell): ?>
-                                                            <td><?= htmlspecialchars((string)$cell) ?></td>
-                                                        <?php endforeach; ?>
-                                                    </tr>
-                                                <?php endif; ?>
-                                            <?php endforeach; ?>
-                                                    </tbody>
+                                        <table class="table table-bordered table-hover table-sm text-nowrap align-middle mb-0" id="previewTable" style="font-size: 0.85rem;">
+                                            <thead class="table-dark sticky-top" id="previewTableHead" style="z-index: 2;">
+                                            </thead>
+                                            <tbody id="previewTableBody">
+                                            </tbody>
                                         </table>
                                     <?php else: ?>
                                         <div class="text-center py-5 text-secondary">No readable data found in this sheet.</div>
                                     <?php endif; ?>
                                 </div>
+
+                                <?php if (!empty($previewData['data'])): ?>
+                                <div class="d-flex flex-column flex-sm-row justify-content-between align-items-center mt-3 px-2 gap-2">
+                                    <span class="text-secondary fw-bold" id="previewPageInfo">Loading data...</span>
+                                    <div class="btn-group shadow-sm">
+                                        <button class="btn btn-outline-secondary fw-bold" onclick="previewPrevPage()" id="previewPrevBtn" disabled>Previous</button>
+                                        <button class="btn btn-outline-secondary fw-bold" onclick="previewNextPage()" id="previewNextBtn" disabled>Next</button>
+                                    </div>
+                                </div>
+                                <?php endif; ?>
 
                             <?php endif; ?>
                         </div>
@@ -433,6 +438,94 @@
             document.getElementById('filterDate').value = '';
             filterReports();
         }
+
+        // ==================================================
+        // JAVASCRIPT PAGINATION FOR EXCEL PREVIEW
+        // ==================================================
+        const rawPreviewData = <?= json_encode($previewData['data'] ?? []) ?>;
+        let previewCurrentPage = 1;
+        let previewRowsPerPage = 50;
+        
+        const headerRow = rawPreviewData.length > 0 ? rawPreviewData[0] : [];
+        const dataRows = rawPreviewData.length > 1 ? rawPreviewData.slice(1) : [];
+
+        function renderPreviewTable() {
+            let thead = document.getElementById('previewTableHead');
+            let tbody = document.getElementById('previewTableBody');
+            if (!thead || !tbody) return;
+
+            let headHtml = '<tr><th class="text-center" style="width: 40px;">#</th>';
+            headerRow.forEach(cell => {
+                let cellVal = cell !== null && cell !== undefined ? String(cell) : '';
+                // Escape HTML for safety just like PHP did
+                cellVal = cellVal.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                headHtml += `<th>${cellVal}</th>`;
+            });
+            headHtml += '</tr>';
+            thead.innerHTML = headHtml;
+
+            let start = (previewCurrentPage - 1) * previewRowsPerPage;
+            let end = start + previewRowsPerPage;
+            let paginatedItems = dataRows.slice(start, end);
+
+            let html = '';
+            let count = start + 1;
+
+            if (paginatedItems.length === 0) {
+                html = `<tr><td colspan="${headerRow.length + 1}" class="text-center py-5 text-secondary">No readable data found in this sheet.</td></tr>`;
+            } else {
+                paginatedItems.forEach(row => {
+                    html += `<tr><td class="text-center fw-bold bg-light text-secondary">${count++}</td>`;
+                    for(let i=0; i<headerRow.length; i++) {
+                        let cellVal = row[i] !== undefined && row[i] !== null ? String(row[i]) : '';
+                        
+                        // MAGIC FIX: Remove the text "PHP " (case-insensitive) to only show numbers in the range
+                        cellVal = cellVal.replace(/PHP\s*/ig, '');
+                        
+                        // Escape HTML for safety
+                        cellVal = cellVal.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                        html += `<td>${cellVal}</td>`;
+                    }
+                    html += `</tr>`;
+                });
+            }
+
+            tbody.innerHTML = html;
+            updatePreviewPaginationInfo();
+        }
+
+        function updatePreviewPaginationInfo() {
+            let total = dataRows.length;
+            let start = total === 0 ? 0 : ((previewCurrentPage - 1) * previewRowsPerPage) + 1;
+            let end = Math.min(previewCurrentPage * previewRowsPerPage, total);
+            
+            let pageInfo = document.getElementById('previewPageInfo');
+            if (pageInfo) pageInfo.innerText = `Showing ${start} to ${end} of ${total} entries`;
+            
+            let prevBtn = document.getElementById('previewPrevBtn');
+            if (prevBtn) prevBtn.disabled = previewCurrentPage === 1;
+            
+            let nextBtn = document.getElementById('previewNextBtn');
+            if (nextBtn) nextBtn.disabled = end >= total;
+        }
+
+        function previewPrevPage() { if (previewCurrentPage > 1) { previewCurrentPage--; renderPreviewTable(); } }
+        function previewNextPage() { if (previewCurrentPage * previewRowsPerPage < dataRows.length) { previewCurrentPage++; renderPreviewTable(); } }
+        
+        function changePreviewRowsPerPage() {
+            let selectBox = document.getElementById('previewRowsPerPage');
+            if (selectBox) {
+                previewRowsPerPage = parseInt(selectBox.value);
+                previewCurrentPage = 1;
+                renderPreviewTable();
+            }
+        }
+
+        document.addEventListener("DOMContentLoaded", () => {
+            if (document.getElementById('previewTableBody')) {
+                renderPreviewTable();
+            }
+        });
 
         // Global Modals Logic
         function showConfirmModal(title, message, colorClass, btnText, callback) {

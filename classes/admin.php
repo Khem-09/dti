@@ -156,7 +156,7 @@ class Admin {
                     FROM price_records pr
                     JOIN stores s ON pr.store_id = s.id
                     JOIN monitoring_periods mp ON pr.period_id = mp.id
-                    WHERE $period_condition
+                    WHERE $period_condition AND pr.actual_price > 0
                 ) pr_filtered ON pv.id = pr_filtered.variant_id
                 WHERE 1=1 ";
         
@@ -232,7 +232,7 @@ class Admin {
                     FROM price_records pr
                     JOIN stores st ON pr.store_id = st.id
                     JOIN monitoring_periods mp ON pr.period_id = mp.id
-                    WHERE $period_condition
+                    WHERE $period_condition AND pr.actual_price > 0
                 ) pr_filtered ON pv.id = pr_filtered.variant_id
                 WHERE 1=1 ";
         
@@ -303,50 +303,154 @@ class Admin {
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
-    public function getTrendData($variant_id, $year, $month = null, $province_id = 'All') {
-        $prov_join = "JOIN stores st ON pr.store_id = st.id";
+    // UPDATED: Now groups ALL stores that match the absolute lowest or highest price
+    public function getMarketExtremes($variant_id, $year, $month = null, $province_id = 'All') {
+        $params = [$variant_id, $year];
+        $cond = "WHERE pr.variant_id = ? AND mp.year = ? AND pr.actual_price > 0 AND UPPER(st.store_name) NOT LIKE '%PRICE FREEZE%'";
         
-        if (empty($month)) {
-            $sql = "SELECT mp.month as period_label, '' as date_range_label,
-                           MIN(pr.actual_price) as min_price, MAX(pr.actual_price) as max_price
-                    FROM price_records pr
-                    JOIN monitoring_periods mp ON pr.period_id = mp.id
-                    $prov_join
-                    WHERE pr.variant_id = ? AND mp.year = ?";
-            $params = [$variant_id, $year];
-
-            if ($province_id != 'All') {
-                $sql .= " AND st.province_id = ?";
-                $params[] = $province_id;
-            }
-
-            $sql .= " GROUP BY mp.month
-                      ORDER BY FIELD(mp.month, 'January','February','March','April','May','June','July','August','September','October','November','December')";
-            
-            $stmt = $this->conn->prepare($sql);
-            $stmt->execute($params);
-        } else {
-            $sql = "SELECT CONCAT('Week ', mp.week_number) as period_label, mp.date_range_label,
-                           MIN(pr.actual_price) as min_price, MAX(pr.actual_price) as max_price
-                    FROM price_records pr
-                    JOIN monitoring_periods mp ON pr.period_id = mp.id
-                    $prov_join
-                    WHERE pr.variant_id = ? AND mp.year = ? AND mp.month = ?";
-            $params = [$variant_id, $year, $month];
-
-            if ($province_id != 'All') {
-                $sql .= " AND st.province_id = ?";
-                $params[] = $province_id;
-            }
-
-            $sql .= " GROUP BY mp.id
-                      ORDER BY mp.week_number ASC";
-                      
-            $stmt = $this->conn->prepare($sql);
-            $stmt->execute($params);
+        if (!empty($month)) {
+            $cond .= " AND mp.month = ?";
+            $params[] = $month;
         }
+        if ($province_id != 'All') {
+            $cond .= " AND st.province_id = ?";
+            $params[] = $province_id;
+        }
+
+        // Step 1: Find the absolute minimum and maximum values first
+        $agg_sql = "SELECT MIN(pr.actual_price) as min_price, MAX(pr.actual_price) as max_price
+                    FROM price_records pr
+                    JOIN stores st ON pr.store_id = st.id
+                    JOIN monitoring_periods mp ON pr.period_id = mp.id
+                    $cond";
+        $stmtAgg = $this->conn->prepare($agg_sql);
+        $stmtAgg->execute($params);
+        $agg_data = $stmtAgg->fetch(PDO::FETCH_ASSOC);
+
+        $min_data = false;
+        $max_data = false;
+
+        if ($agg_data && $agg_data['min_price'] !== null) {
+            $min_price = $agg_data['min_price'];
+            $max_price = $agg_data['max_price'];
+
+            // Step 2: Fetch ALL DISTINCT stores that have this exact minimum price
+            $min_sql = "SELECT DISTINCT st.store_name
+                        FROM price_records pr
+                        JOIN stores st ON pr.store_id = st.id
+                        JOIN monitoring_periods mp ON pr.period_id = mp.id
+                        $cond AND pr.actual_price = ?";
+            $minParams = $params;
+            $minParams[] = $min_price;
+            $stmtMin = $this->conn->prepare($min_sql);
+            $stmtMin->execute($minParams);
+            $min_stores = $stmtMin->fetchAll(PDO::FETCH_COLUMN);
+
+            $min_data = [
+                'actual_price' => $min_price,
+                'store_name' => implode(", ", $min_stores)
+            ];
+
+            // Step 3: Fetch ALL DISTINCT stores that have this exact maximum price
+            $max_sql = "SELECT DISTINCT st.store_name
+                        FROM price_records pr
+                        JOIN stores st ON pr.store_id = st.id
+                        JOIN monitoring_periods mp ON pr.period_id = mp.id
+                        $cond AND pr.actual_price = ?";
+            $maxParams = $params;
+            $maxParams[] = $max_price;
+            $stmtMax = $this->conn->prepare($max_sql);
+            $stmtMax->execute($maxParams);
+            $max_stores = $stmtMax->fetchAll(PDO::FETCH_COLUMN);
+
+            $max_data = [
+                'actual_price' => $max_price,
+                'store_name' => implode(", ", $max_stores)
+            ];
+        }
+
+        return [
+            'lowest' => $min_data,
+            'highest' => $max_data
+        ];
+    }
+
+    public function getTrendData($variant_id, $year, $month = null, $province_id = 'All') {
+        $sub_params = [$variant_id];
         
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        // UPDATED: Filters out prices <= 0 and ignores "PRICE FREEZE" from affecting graph minimums
+        $store_cond = " AND pr.actual_price > 0 AND UPPER(st.store_name) NOT LIKE '%PRICE FREEZE%' ";
+        
+        if ($province_id != 'All') {
+            $store_cond .= " AND st.province_id = ? ";
+            $sub_params[] = $province_id;
+        }
+
+        if (empty($month)) {
+            // Yearly View - Force 12 month alignment, safely joining prices
+            $sql = "SELECT mp.month as period_label, '' as date_range_label,
+                           MIN(pr_filtered.actual_price) as min_price, MAX(pr_filtered.actual_price) as max_price
+                    FROM monitoring_periods mp
+                    LEFT JOIN (
+                        SELECT pr.period_id, pr.actual_price
+                        FROM price_records pr
+                        JOIN stores st ON pr.store_id = st.id
+                        WHERE pr.variant_id = ? $store_cond
+                    ) pr_filtered ON mp.id = pr_filtered.period_id
+                    WHERE mp.year = ?
+                    GROUP BY mp.month
+                    ORDER BY FIELD(mp.month, 'January','February','March','April','May','June','July','August','September','October','November','December')";
+            
+            $params = array_merge($sub_params, [$year]);
+            $stmt = $this->conn->prepare($sql);
+            $stmt->execute($params);
+            $raw_data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            // Structure to guarantee all 12 months appear on the chart axis
+            $structured_data = [];
+            $all_months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+            
+            foreach ($all_months as $m) {
+                $found = null;
+                foreach ($raw_data as $row) {
+                    if ($row['period_label'] == $m) {
+                        $found = $row;
+                        break;
+                    }
+                }
+                if ($found) {
+                    $structured_data[] = $found;
+                } else {
+                    $structured_data[] = [
+                        'period_label' => $m,
+                        'date_range_label' => '',
+                        'min_price' => null,
+                        'max_price' => null
+                    ];
+                }
+            }
+            return $structured_data;
+
+        } else {
+            // Monthly View - Week by week breakdown
+            $sql = "SELECT CONCAT('Week ', mp.week_number) as period_label, MAX(mp.date_range_label) as date_range_label,
+                           MIN(pr_filtered.actual_price) as min_price, MAX(pr_filtered.actual_price) as max_price
+                    FROM monitoring_periods mp
+                    LEFT JOIN (
+                        SELECT pr.period_id, pr.actual_price
+                        FROM price_records pr
+                        JOIN stores st ON pr.store_id = st.id
+                        WHERE pr.variant_id = ? $store_cond
+                    ) pr_filtered ON mp.id = pr_filtered.period_id
+                    WHERE mp.year = ? AND mp.month = ?
+                    GROUP BY mp.week_number
+                    ORDER BY mp.week_number ASC";
+            
+            $params = array_merge($sub_params, [$year, $month]);
+            $stmt = $this->conn->prepare($sql);
+            $stmt->execute($params);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        }
     }
 
     public function getDashboardStats() {

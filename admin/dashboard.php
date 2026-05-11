@@ -64,7 +64,6 @@
             <ul class="dropdown-menu dropdown-menu-end shadow-sm border-0 mt-3" aria-labelledby="dropdownUser" style="min-width: 240px; border-radius: 8px;">
                 <li><h6 class="dropdown-header text-secondary fw-bold" style="font-size: 0.7rem; letter-spacing: 0.5px;">ACCOUNT MANAGEMENT</h6></li>
                 <li><a class="dropdown-item py-2 fw-bold text-secondary" href="#" data-bs-toggle="modal" data-bs-target="#adminProfileModal"><i class="bi bi-gear me-2 fs-6"></i> Account Settings</a></li>
-                <li><a class="dropdown-item py-2 fw-bold text-secondary" href="#" data-bs-toggle="modal" data-bs-target="#adminManageUserModal"><i class="bi bi-person-gear me-2 fs-6"></i> Manage User</a></li>
                 <li><hr class="dropdown-divider"></li>
                 <li><a class="dropdown-item py-2 text-danger fw-bold" href="#" onclick="confirmLogout(event)"><i class="bi bi-box-arrow-right me-2 fs-6"></i> Secure Logout</a></li>
             </ul>
@@ -155,7 +154,7 @@
                 </div>
 
                 <div class="mb-4 mb-md-5 bg-white p-3 p-md-4 rounded shadow-sm border">
-                    <h5 class="fw-bold mb-3" style="color: #0A0A3A;"><i class="bi bi-journal-check text-primary me-2"></i>Recent Generated Reports</h5>
+                    <h5 class="fw-bold mb-3" style="color: #0A0A3A;"><i class="bi bi-journal-check text-primary me-2"></i>Generated Reports</h5>
                     <div class="table-responsive border rounded shadow-sm">
                         <table class="table table-hover align-middle mb-0 text-nowrap">
                             <thead class="table-light text-secondary">
@@ -205,7 +204,7 @@
                 </div>
 
                 <div class="mb-4 mb-md-5 bg-white p-3 p-md-4 rounded shadow-sm border">
-                    <h5 class="fw-bold mb-3" style="color: #0A0A3A;"><i class="bi bi-cloud-arrow-up text-success me-2"></i>Recently Uploaded Data Files</h5>
+                    <h5 class="fw-bold mb-3" style="color: #0A0A3A;"><i class="bi bi-cloud-arrow-up text-success me-2"></i>Uploaded Files</h5>
                     <div class="table-responsive border rounded shadow-sm">
                         <table class="table table-hover align-middle mb-0 text-nowrap">
                             <thead class="table-light text-secondary">
@@ -459,7 +458,7 @@
         function confirmLogout(e) {
             e.preventDefault();
             showConfirmModal('Secure Logout', 'Are you sure you want to log out of the system?', 'danger', '<i class="bi bi-box-arrow-right"></i> Logout', function() {
-                window.location.href = '../logout.php';
+                window.location.href = '../admin/logout.php';
             });
         }
 
@@ -586,7 +585,7 @@
                     let data = await res.json();
                     if(data.status === 'success') {
                         alert("Password updated successfully! Please log in again with your new credentials.");
-                        window.location.href = '../logout.php';
+                        window.location.href = '../admin/logout.php';
                     } else {
                         alert("Error: " + data.message);
                     }

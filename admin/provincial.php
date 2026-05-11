@@ -190,7 +190,7 @@
                     
                     <div id="part1" class="<?php echo ($part == 1) ? '' : 'd-none'; ?>">
                         <div class="d-flex justify-content-between align-items-center mb-4">
-                            <h4 class="section-title m-0">Upload File(s)</h4>
+                            <h4 class="section-title m-0">Upload File</h4>
                         </div>
                         
                         <div id="uploadStatus" class="alert alert-info d-none fw-bold shadow-sm">
@@ -351,7 +351,7 @@
                                 <span class="fw-bold text-dark">Category:</span>
                                 <div class="btn-group shadow-sm flex-grow-1" role="group">
                                     <a href="provincial.php?part=3&province_id=<?= $filter_province ?>&year=<?= $filter_year ?>&month=<?= $filter_month ?>&week=<?= $filter_week ?>&type=BN" 
-                                       class="btn btn-sm <?= ($filter_type == 'BN') ? 'btn-primary fw-bold' : 'btn-outline-primary' ?>">BN</a>
+                                       class="btn btn-sm <?= ($filter_type == 'BN') ? 'btn-primary fw-bold' : 'btn-outline-primary' ?>"> BN</a>
                                     <a href="provincial.php?part=3&province_id=<?= $filter_province ?>&year=<?= $filter_year ?>&month=<?= $filter_month ?>&week=<?= $filter_week ?>&type=PC" 
                                        class="btn btn-sm <?= ($filter_type == 'PC') ? 'btn-primary fw-bold' : 'btn-outline-primary' ?>">PC</a>
                                 </div>
@@ -1144,6 +1144,9 @@
                                     let cellTxt = (jData[sR][scanC] || "").toString().trim();
                                     if(!cellTxt) continue;
                                     
+                                    // NEW: Ignore cells containing 'PRICE FREEZE' so it doesn't hijack the target date
+                                    if(cellTxt.toUpperCase().includes("PRICE FREEZE")) continue;
+                                    
                                     cellTxt = formatIfExcelDate(cellTxt); // Safely convert serial numbers back to readable strings
                                     
                                     let yMatch = cellTxt.match(/\b(20[2-3]\d)\b/);
@@ -1234,6 +1237,9 @@
                                 for(let sR = 0; sR <= hRow; sR++) {
                                     let cTxt = (jData[sR][c] || "").toString().trim();
                                     if (!cTxt) continue;
+
+                                    // NEW: Ignore cells containing 'PRICE FREEZE' for specific store columns
+                                    if(cTxt.toUpperCase().includes("PRICE FREEZE")) continue;
 
                                     cTxt = formatIfExcelDate(cTxt); // Safely convert serial numbers back to readable strings
 
@@ -1480,4 +1486,4 @@
         }
     </script>
 </body>
-</html>
+</html> 

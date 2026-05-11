@@ -123,7 +123,7 @@
                     
                     <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center mb-2 gap-2">
                         <h2 class="fw-bold m-0" style="color: #0A0A3A; font-size: 26px;">
-                            <a href="products.php" class="text-decoration-none text-secondary me-2 btn-action"><i class="bi bi-arrow-left"></i></a>
+                            <a href="products.php" class="text-decoration-none text-secondary me-2"><i class="bi bi-arrow-left"></i></a>
                             Masterlist Movement Log
                         </h2>
                     </div>
@@ -178,8 +178,8 @@
                     <div class="d-flex flex-column flex-sm-row justify-content-between align-items-center mt-3 px-2 gap-2">
                         <span class="text-secondary fw-bold" id="pageInfo">Loading log data...</span>
                         <div class="btn-group shadow-sm">
-                            <button class="btn btn-outline-secondary btn-action fw-bold" onclick="prevPage()" id="prevBtn" disabled>Previous</button>
-                            <button class="btn btn-outline-secondary btn-action fw-bold" onclick="nextPage()" id="nextBtn" disabled>Next</button>
+                            <button class="btn btn-outline-secondary fw-bold" onclick="prevPage()" id="prevBtn" disabled>Previous</button>
+                            <button class="btn btn-outline-secondary fw-bold" onclick="nextPage()" id="nextBtn" disabled>Next</button>
                         </div>
                     </div>
 

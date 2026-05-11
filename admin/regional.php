@@ -66,6 +66,12 @@
         .btn-action:hover { transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.15) !important; }
         .btn-action i { font-size: 1.05rem; }
         .dropdown-toggle::after { vertical-align: middle; }
+
+        /* Custom elegant scrollbar for the table */
+        .table-responsive::-webkit-scrollbar { width: 8px; height: 8px; }
+        .table-responsive::-webkit-scrollbar-track { background: #f8f9fa; border-radius: 8px; }
+        .table-responsive::-webkit-scrollbar-thumb { background: #cbd0d5; border-radius: 8px; }
+        .table-responsive::-webkit-scrollbar-thumb:hover { background: #adb5bd; }
     </style>
 </head>
 <body style="background-color: #EAEAEA; overflow-x: hidden;">
@@ -219,21 +225,21 @@
                         </div>
                     </div>
 
-                    <div class="table-responsive bg-white shadow-sm rounded border p-1">
+                    <div class="table-responsive bg-white shadow-sm rounded border" style="max-height: 550px; overflow: auto;">
                         <table class="table table-hover align-middle mb-0 text-nowrap" id="reportTable" style="font-size: 0.85rem;">
-                            <thead class="table-light">
+                            <thead class="table-light sticky-top" style="z-index: 2; top: 0;">
                                 <tr style="border-bottom: 2px solid #8B0000;">
-                                    <th class="fw-bold text-secondary text-center" style="width: 40px;">#</th>
-                                    <th class="fw-bold text-secondary">Type</th>
-                                    <th class="fw-bold text-secondary">Category</th>
-                                    <th class="fw-bold text-dark">Brand</th>
-                                    <th class="fw-bold text-dark">Product Name</th>
-                                    <th class="fw-bold text-secondary">Specs</th>
-                                    <th class="fw-bold text-center">Zamboanga City</th>
-                                    <th class="fw-bold text-center">Zamboanga Sibugay</th>
-                                    <th class="fw-bold text-center">Isabela City</th>
-                                    <th class="fw-bold text-center">Zamboanga Del Sur</th>
-                                    <th class="fw-bold text-center">Zamboanga Del Norte</th>
+                                    <th class="fw-bold text-secondary text-center" style="width: 40px; background-color: #f8f9fa;">#</th>
+                                    <th class="fw-bold text-secondary" style="background-color: #f8f9fa;">Type</th>
+                                    <th class="fw-bold text-secondary" style="background-color: #f8f9fa;">Category</th>
+                                    <th class="fw-bold text-dark" style="background-color: #f8f9fa;">Brand</th>
+                                    <th class="fw-bold text-dark" style="background-color: #f8f9fa;">Product Name</th>
+                                    <th class="fw-bold text-secondary" style="background-color: #f8f9fa;">Specs</th>
+                                    <th class="fw-bold text-center" style="background-color: #f8f9fa;">Zamboanga City</th>
+                                    <th class="fw-bold text-center" style="background-color: #f8f9fa;">Zamboanga Sibugay</th>
+                                    <th class="fw-bold text-center" style="background-color: #f8f9fa;">Isabela City</th>
+                                    <th class="fw-bold text-center" style="background-color: #f8f9fa;">Zamboanga Del Sur</th>
+                                    <th class="fw-bold text-center" style="background-color: #f8f9fa;">Zamboanga Del Norte</th>
                                 </tr>
                             </thead>
                             <tbody id="reportTableBody">

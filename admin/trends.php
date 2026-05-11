@@ -57,8 +57,11 @@
     }
 
     $trendData = [];
+    $marketExtremes = ['lowest' => false, 'highest' => false];
+    
     if ($filter_variant_id) {
         $trendData = $admin->getTrendData($filter_variant_id, $filter_year, $filter_month, $filter_province);
+        $marketExtremes = $admin->getMarketExtremes($filter_variant_id, $filter_year, $filter_month, $filter_province);
     }
 ?>
 
@@ -87,6 +90,12 @@
         .info-badge { display: inline-flex; align-items: center; gap: 0.5rem; background-color: #fff; border: 1px solid #dee2e6; padding: 0.4rem 1rem; border-radius: 50px; font-size: 0.9rem; box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
         .chart-card { background: #fff; border-radius: 12px; border: 1px solid #e5e5e5; box-shadow: 0 8px 16px rgba(0,0,0,0.04); overflow: hidden; }
         .chart-header { background: #fafafa; border-bottom: 1px solid #e5e5e5; padding: 1rem 1.5rem; display: flex; justify-content: space-between; align-items: center; }
+        
+        /* Scrollbar styling for the extremes list */
+        .store-list-scroll::-webkit-scrollbar { width: 6px; }
+        .store-list-scroll::-webkit-scrollbar-track { background: transparent; }
+        .store-list-scroll::-webkit-scrollbar-thumb { background: #ccc; border-radius: 10px; }
+        .store-list-scroll::-webkit-scrollbar-thumb:hover { background: #aaa; }
     </style>
 </head>
 <body style="background-color: #EAEAEA; overflow-x: hidden;">
@@ -101,7 +110,7 @@
                 <span class="ms-2 fw-bold d-none d-sm-inline" style="color: #0A0A3A; font-size: 1.1rem;">DTI Region IX</span>
             </a>
         </div>
-       
+        
         <div class="dropdown">
             <a href="#" class="d-flex align-items-center text-decoration-none dropdown-toggle" id="dropdownUser" data-bs-toggle="dropdown" aria-expanded="false" style="color: inherit;">
                 <div class="text-end me-3 d-none d-md-block">
@@ -245,6 +254,67 @@
                             <i class="bi bi-download"></i> Export Data
                         </button>
                     </div>
+
+                    <?php if (!empty($marketExtremes['lowest']) && !empty($marketExtremes['highest'])): ?>
+                    <div class="row g-3 mb-4">
+                        <div class="col-md-6">
+                            <div class="p-3 rounded border shadow-sm h-100" style="background-color: #f0fdf4; border-color: #d1e7dd !important;">
+                                <div class="d-flex align-items-start gap-3">
+                                    <div class="bg-success text-white rounded-circle d-flex align-items-center justify-content-center flex-shrink-0" style="width: 45px; height: 45px;">
+                                        <i class="bi bi-arrow-down-circle fs-5"></i>
+                                    </div>
+                                    <div class="w-100 overflow-hidden">
+                                        <p class="text-success mb-0 fw-bold" style="font-size: 0.85rem;">LOWEST PRICE FOUND</p>
+                                        <h4 class="fw-bold text-dark m-0">₱ <?= number_format($marketExtremes['lowest']['actual_price'], 2) ?></h4>
+                                        <div class="mt-2 pe-1 store-list-scroll" style="max-height: 80px; overflow-y: auto;">
+                                            <ul class="mb-0 ps-3 small text-secondary">
+                                                <?php 
+                                                    $lowStores = [];
+                                                    if (isset($marketExtremes['lowest']['stores']) && is_array($marketExtremes['lowest']['stores'])) {
+                                                        $lowStores = $marketExtremes['lowest']['stores'];
+                                                    } elseif (isset($marketExtremes['lowest']['store_name'])) {
+                                                        $lowStores = explode(', ', $marketExtremes['lowest']['store_name']);
+                                                    }
+                                                    foreach($lowStores as $store): 
+                                                ?>
+                                                    <li title="<?= htmlspecialchars(trim($store)) ?>"><?= htmlspecialchars(trim($store)) ?></li>
+                                                <?php endforeach; ?>
+                                            </ul>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="p-3 rounded border shadow-sm h-100" style="background-color: #fff3cd; border-color: #ffe69c !important;">
+                                <div class="d-flex align-items-start gap-3">
+                                    <div class="text-white rounded-circle d-flex align-items-center justify-content-center flex-shrink-0" style="width: 45px; height: 45px; background-color: #fd7e14;">
+                                        <i class="bi bi-arrow-up-circle fs-5"></i>
+                                    </div>
+                                    <div class="w-100 overflow-hidden">
+                                        <p class="mb-0 fw-bold" style="color: #d35400; font-size: 0.85rem;">HIGHEST PRICE FOUND</p>
+                                        <h4 class="fw-bold text-dark m-0">₱ <?= number_format($marketExtremes['highest']['actual_price'], 2) ?></h4>
+                                        <div class="mt-2 pe-1 store-list-scroll" style="max-height: 80px; overflow-y: auto;">
+                                            <ul class="mb-0 ps-3 small text-secondary">
+                                                <?php 
+                                                    $highStores = [];
+                                                    if (isset($marketExtremes['highest']['stores']) && is_array($marketExtremes['highest']['stores'])) {
+                                                        $highStores = $marketExtremes['highest']['stores'];
+                                                    } elseif (isset($marketExtremes['highest']['store_name'])) {
+                                                        $highStores = explode(', ', $marketExtremes['highest']['store_name']);
+                                                    }
+                                                    foreach($highStores as $store): 
+                                                ?>
+                                                    <li title="<?= htmlspecialchars(trim($store)) ?>"><?= htmlspecialchars(trim($store)) ?></li>
+                                                <?php endforeach; ?>
+                                            </ul>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <?php endif; ?>
 
                     <div class="chart-card w-100">
                         <div class="chart-header flex-column flex-sm-row gap-2">
@@ -472,7 +542,8 @@
                             pointBorderColor: '#28a745',
                             pointRadius: 5,
                             pointHoverRadius: 8,
-                            tension: 0.4 
+                            tension: 0.4,
+                            spanGaps: true // MAGIC FIX FOR CHART GAPS
                         },
                         {
                             label: 'Lowest Recorded Price',
@@ -485,7 +556,8 @@
                             pointBorderColor: '#fd7e14',
                             pointRadius: 5,
                             pointHoverRadius: 8,
-                            tension: 0.4 
+                            tension: 0.4,
+                            spanGaps: true // MAGIC FIX FOR CHART GAPS
                         }
                     ]
                 },
@@ -526,8 +598,8 @@
                             }
                         }
                     }
-                }          }
-            );
+                }          
+            });
         }
 
         // Global Modals Logic
