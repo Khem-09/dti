@@ -22,11 +22,11 @@ if (isset($_SESSION['admin_id']) && isset($_SESSION['logged_in'])) {
             <a class="navbar-brand d-flex align-items-center" href="#">
                 <span class="fw-bold">Price Monitoring System</span>
             </a>
-            <div class="ms-auto">
+            <!-- <div class="ms-auto">
                 <ul class="navbar-nav">
                     <li class="nav-item"><a class="nav-link text-white me-3" href="index.php">Home</a></li>
                 </ul>
-            </div>
+            </div> -->
         </div>
     </nav>
 

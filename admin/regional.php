@@ -555,7 +555,7 @@
         });
 
         function saveRegionalReportToDB() {
-            showConfirmModal('Generate Regional Report', 'Are you sure you want to generate and save this regional summary to the database?', 'success', '<i class="bi bi-gear"></i> Generate & Save', async function() {
+            showConfirmModal('Generate Regional Report', 'Are you sure you want to generate and save this regional summary to the database?', 'success', '<i class="bi bi-journal-check"></i> Generate & Save', async function() {
                 const btn = document.getElementById('saveDbBtn');
                 const origHTML = btn.innerHTML;
                 btn.innerHTML = '<i class="bi bi-hourglass-split spin"></i> Saving to DB...';
@@ -591,7 +591,7 @@
                 alert("There is no data to export!");
                 return;
             }
-            showConfirmModal('Export to Excel', 'Are you sure you want to generate and download this regional summary?', 'primary', '<i class="bi bi-file-earmark-excel"></i> Export', function() {
+            showConfirmModal('Export to Excel', 'Are you sure you want to generate and download this regional summary?', 'primary', '<i class="bi bi-download"></i> Export', function() {
                 const btn = document.getElementById('exportReportBtn');
                 const originalHTML = btn.innerHTML;
                 btn.innerHTML = '<i class="bi bi-hourglass-split spin"></i> Exporting...';

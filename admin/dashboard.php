@@ -506,7 +506,7 @@
         });
 
         async function buildAndNavigateReport(prov_id, year, btn) {
-            showConfirmModal('Generate Report', 'Are you sure you want to generate a new report for this data?', 'success', '<i class="bi bi-gear"></i> Generate', async function() {
+            showConfirmModal('Generate Report', 'Are you sure you want to generate a new report for this data?', 'success', '<i class="bi bi-journal-check"></i> Generate', async function() {
                 let origHTML = btn.innerHTML;
                 btn.innerHTML = '<i class="bi bi-hourglass-split spin"></i> Generating...';
                 btn.disabled = true;

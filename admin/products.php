@@ -239,7 +239,7 @@
                         </div>
                         <div class="d-flex justify-content-end gap-2 mt-4 pt-3 border-top">
                             <button type="button" class="btn btn-outline-secondary shadow-sm px-4" data-bs-dismiss="modal"><i class="bi bi-x-circle"></i> Cancel</button>
-                            <button type="submit" class="btn btn-primary shadow-sm px-4"><i class="bi bi-file-earmark-excel"></i> Export</button>
+                            <button type="submit" class="btn btn-primary shadow-sm px-4"><i class="bi bi-download"></i> Export</button>
                         </div>
                     </form>
                 </div>

@@ -759,7 +759,7 @@
                 return;
             }
             
-            showConfirmModal('Export Trend Data', 'Are you sure you want to generate and download this trend graph data?', 'primary', '<i class="bi bi-file-earmark-excel"></i> Export', function() {
+            showConfirmModal('Export Trend Data', 'Are you sure you want to generate and download this trend graph data?', 'primary', '<i class="bi bi-download"></i> Export', function() {
                 let wb = XLSX.utils.book_new();
                 let wsData = [["Period", "Date Range", "Lowest Price (₱)", "Highest Price (₱)"]];
                 
