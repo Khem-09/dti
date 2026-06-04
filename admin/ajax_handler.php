@@ -19,6 +19,276 @@ try {
     $database = new Database();
     $conn = $database->getConnection();
 
+    // =========================================================================================
+    // EXPORT COMPLIANCE REPORT EXCEL (Uses PhpSpreadsheet to retain SRP text colors)
+    // =========================================================================================
+    if (isset($_GET['action']) && $_GET['action'] === 'export_compliance_excel') {
+        
+        // FIX: Deep clean the buffer immediately to prevent any stray characters from corrupting the Excel file
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+        
+        $c_province = $_GET['c_province'] ?? '';
+        $c_year = $_GET['c_year'] ?? date('Y');
+        $c_month = $_GET['c_month'] ?? '';
+        $c_week = $_GET['c_week'] ?? '';
+
+        if (empty($c_province)) die("Province required.");
+
+        // Added ct.type_code to easily identify which sheet the row belongs to
+        $sql = "SELECT p.product_name, b.brand_name, pv.specifications, pv.srp, 
+                       st.store_name, pr.actual_price, ct.type_code, ct.type_name, c.category_name,
+                       mp.date_range_label, mp.month, mp.year, mp.week_number
+                FROM price_records pr 
+                JOIN product_variants pv ON pr.variant_id = pv.id 
+                JOIN products p ON pv.product_id = p.id 
+                JOIN brands b ON p.brand_id = b.id 
+                JOIN stores st ON pr.store_id = st.id 
+                JOIN monitoring_periods mp ON pr.period_id = mp.id 
+                JOIN commodity_types ct ON p.type_id = ct.id
+                JOIN categories c ON p.category_id = c.id
+                WHERE st.province_id = ? AND mp.year = ? AND pr.actual_price > 0";
+        $params = [$c_province, $c_year];
+        if (!empty($c_month)) { $sql .= " AND mp.month = ?"; $params[] = $c_month; }
+        if (!empty($c_week)) { $sql .= " AND mp.id = ?"; $params[] = $c_week; }
+        $sql .= " ORDER BY mp.month, mp.week_number, b.brand_name, p.product_name";
+
+        $stmt = $conn->prepare($sql);
+        $stmt->execute($params);
+        $records = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
+        
+        // Setup First Sheet: Basic Necessities
+        $wsBN = $spreadsheet->getActiveSheet();
+        $wsBN->setTitle('Basic Necessities');
+
+        // Setup Second Sheet: Prime Commodities
+        $wsPC = $spreadsheet->createSheet();
+        $wsPC->setTitle('Prime Commodities');
+
+        $headers = ['Date / Period', 'Type', 'Category', 'Brand', 'Product Name', 'Specs', 'Store Name', 'SRP (₱)', 'Actual Price (₱)', 'Variance (₱)', 'Status'];
+        
+        // Apply Headers and Styling to BN Sheet
+        $wsBN->fromArray($headers, NULL, 'A1');
+        $wsBN->getStyle('A1:K1')->getFont()->setBold(true);
+        $wsBN->getStyle('A1:K1')->getFill()->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)->getStartColor()->setARGB('FFD3D3D3');
+
+        // Apply Headers and Styling to PC Sheet
+        $wsPC->fromArray($headers, NULL, 'A1');
+        $wsPC->getStyle('A1:K1')->getFont()->setBold(true);
+        $wsPC->getStyle('A1:K1')->getFill()->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)->getStartColor()->setARGB('FFD3D3D3');
+
+        $bnRowNum = 2;
+        $pcRowNum = 2;
+
+        foreach ($records as $row) {
+            $dateStr = !empty($row['date_range_label']) ? $row['date_range_label'] : "W{$row['week_number']} {$row['month']} {$row['year']}";
+            $srp = $row['srp'];
+            $actual = $row['actual_price'];
+            
+            $variance = '';
+            $status = '';
+            $color = 'FF000000'; // Default black
+
+            if (empty($srp) || $srp <= 0) {
+                $status = 'No SRP';
+                $variance = 'N/A';
+            } else {
+                $varVal = $actual - $srp;
+                $variance = ($varVal > 0 ? '+' : '') . number_format($varVal, 2);
+                if ($actual > $srp) {
+                    $status = 'Non-Compliant (Overpriced)';
+                    $color = 'FFFF0000'; // Red
+                } else {
+                    $status = 'Compliant';
+                    $color = 'FF008000'; // Green
+                }
+            }
+
+            // Determine which sheet this row belongs to based on the commodity type
+            if (isset($row['type_code']) && ($row['type_code'] === 'BN' || strpos(strtoupper($row['type_name']), 'BASIC') !== false)) {
+                $ws = $wsBN;
+                $rowNum = $bnRowNum;
+                $bnRowNum++;
+            } else {
+                $ws = $wsPC;
+                $rowNum = $pcRowNum;
+                $pcRowNum++;
+            }
+
+            $ws->setCellValueExplicit('A'.$rowNum, $dateStr, \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING);
+            $ws->setCellValue('B'.$rowNum, $row['type_name']);
+            $ws->setCellValue('C'.$rowNum, $row['category_name']);
+            $ws->setCellValue('D'.$rowNum, $row['brand_name']);
+            $ws->setCellValue('E'.$rowNum, $row['product_name']);
+            $ws->setCellValue('F'.$rowNum, $row['specifications']);
+            $ws->setCellValue('G'.$rowNum, $row['store_name']);
+            $ws->setCellValueExplicit('H'.$rowNum, empty($srp) ? 'N/A' : number_format($srp, 2), \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING);
+            $ws->setCellValueExplicit('I'.$rowNum, number_format($actual, 2), \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING);
+            $ws->setCellValueExplicit('J'.$rowNum, $variance, \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING);
+            $ws->setCellValue('K'.$rowNum, $status);
+
+            // Apply colors
+            $ws->getStyle("I{$rowNum}:K{$rowNum}")->getFont()->getColor()->setARGB($color);
+        }
+
+        // Auto-size columns for both sheets
+        foreach(range('A','K') as $col) {
+            $wsBN->getColumnDimension($col)->setAutoSize(true);
+            $wsPC->getColumnDimension($col)->setAutoSize(true);
+        }
+
+        // Ensure the file opens on the BN sheet by default
+        $spreadsheet->setActiveSheetIndex(0);
+
+        // Deep clean all output buffers before initiating download
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+        
+        $filename = "SRP_Compliance_Tracker_{$c_year}.xlsx";
+        header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        header('Content-Disposition: attachment;filename="'.$filename.'"');
+        header('Cache-Control: max-age=0');
+        $writer = \PhpOffice\PhpSpreadsheet\IOFactory::createWriter($spreadsheet, 'Xlsx');
+        $writer->save('php://output');
+        exit();
+    }
+
+    // =========================================================================================
+    // EXPORT COLORED EXCEL PREVIEW (Must be at the very top before any JSON headers are sent!)
+    // =========================================================================================
+    if (isset($_GET['action']) && $_GET['action'] === 'export_colored_preview') {
+        
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+        
+        $file_id = $_GET['file_id'];
+        $sheet_name = $_GET['sheet'] ?? null;
+
+        $stmt = $conn->prepare("SELECT original_filename FROM uploaded_files WHERE id = ?");
+        $stmt->execute([$file_id]);
+        $filename = $stmt->fetchColumn();
+
+        if (!$filename) { 
+            die("File not found in database."); 
+        }
+        $filePath = "../uploads/" . $filename;
+        if (!file_exists($filePath)) { 
+            die("File missing from server uploads folder."); 
+        }
+
+        try {
+            $inputFileType = \PhpOffice\PhpSpreadsheet\IOFactory::identify($filePath);
+            $reader = \PhpOffice\PhpSpreadsheet\IOFactory::createReader($inputFileType);
+            $spreadsheet = $reader->load($filePath);
+            
+            if ($sheet_name && $spreadsheet->sheetNameExists($sheet_name)) {
+                $worksheet = $spreadsheet->getSheetByName($sheet_name);
+            } else {
+                $worksheet = $spreadsheet->getActiveSheet();
+            }
+
+            $highestRow = $worksheet->getHighestRow();
+            $highestColumn = $worksheet->getHighestColumn();
+            $highestColumnIndex = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::columnIndexFromString($highestColumn);
+
+            $hRow = -1;
+            $srpCol = -1;
+            $storeStartCol = -1;
+
+            // Find Header Row
+            for ($r = 1; $r <= min(30, $highestRow); $r++) {
+                $rowStr = "";
+                for ($c = 1; $c <= $highestColumnIndex; $c++) {
+                    $colLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($c);
+                    $val = $worksheet->getCell($colLetter . $r)->getValue();
+                    $rowStr .= " " . strtoupper((string)$val);
+                }
+                if (strpos($rowStr, "COMMODITY") !== false || strpos($rowStr, "BRAND") !== false || strpos($rowStr, "SPECIFICATION") !== false) {
+                    $hRow = $r;
+                    break;
+                }
+            }
+
+            if ($hRow !== -1) {
+                $maxCol = -1;
+                for ($c = 1; $c <= $highestColumnIndex; $c++) {
+                    $colLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($c);
+                    $header = strtoupper((string)$worksheet->getCell($colLetter . $hRow)->getValue());
+                    
+                    if (strpos($header, "SRP") !== false || strpos($header, "SUGGESTED") !== false) {
+                        $srpCol = $c;
+                    }
+                    if (strpos($header, "TYPE") !== false || strpos($header, "CATEGO") !== false || strpos($header, "COMMODITY") !== false || strpos($header, "PRODUCT") !== false || strpos($header, "BRAND") !== false || strpos($header, "SPEC") !== false) {
+                        if ($c > $maxCol) $maxCol = $c;
+                    }
+                    if (strpos($header, "SRP") !== false && $c > $maxCol) $maxCol = $c;
+                }
+                $storeStartCol = $maxCol !== -1 ? $maxCol + 1 : 7;
+
+                if ($srpCol !== -1) {
+                    $srpColLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($srpCol);
+                    
+                    for ($r = $hRow + 1; $r <= $highestRow; $r++) {
+                        $srpVal = $worksheet->getCell($srpColLetter . $r)->getValue(); 
+                        $srpRaw = (float)preg_replace('/[^0-9.]/', '', (string)$srpVal);
+                        
+                        if ($srpRaw > 0) {
+                            for ($c = $storeStartCol; $c <= $highestColumnIndex; $c++) {
+                                $colLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($c);
+                                
+                                $row1 = $hRow;
+                                $row2 = max(1, $hRow - 1);
+                                $row3 = max(1, $hRow - 2);
+                                
+                                $colHead1 = strtoupper((string)$worksheet->getCell($colLetter . $row1)->getValue());
+                                $colHead2 = strtoupper((string)$worksheet->getCell($colLetter . $row2)->getValue());
+                                $colHead3 = strtoupper((string)$worksheet->getCell($colLetter . $row3)->getValue());
+                                $combinedHead = $colHead1 . " " . $colHead2 . " " . $colHead3;
+                                
+                                if (strpos($combinedHead, "MIN") !== false || strpos($combinedHead, "MAX") !== false || strpos($combinedHead, "AVERAGE") !== false || strpos($combinedHead, "MODE") !== false || strpos($combinedHead, "NAN") !== false) {
+                                    continue;
+                                }
+
+                                $cellVal = (string)$worksheet->getCell($colLetter . $r)->getValue();
+                                
+                                if (strpos(strtoupper($cellVal), "PRICE FREEZE") !== false) continue;
+
+                                if (trim($cellVal) !== "") {
+                                    $priceRaw = (float)preg_replace('/[^0-9.]/', '', $cellVal);
+                                    if ($priceRaw > 0) {
+                                        $style = $worksheet->getStyle($colLetter . $r);
+                                        if ($priceRaw > $srpRaw) {
+                                            $style->getFont()->getColor()->setARGB(\PhpOffice\PhpSpreadsheet\Style\Color::COLOR_RED);
+                                            $style->getFont()->setBold(true);
+                                        } else {
+                                            $style->getFont()->getColor()->setARGB('FF008000'); 
+                                            $style->getFont()->setBold(true);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            header('Content-Disposition: attachment;filename="Colored_Preview_'.$filename.'"');
+            header('Cache-Control: max-age=0');
+            $writer = \PhpOffice\PhpSpreadsheet\IOFactory::createWriter($spreadsheet, 'Xlsx');
+            $writer->save('php://output');
+            exit();
+        } catch (Exception $e) {
+            die("Error generating colored Excel file: " . $e->getMessage());
+        }
+    }
+
+
     // Password Verification Only (For Secure Backup Auth)
     if (isset($_POST['action']) && $_POST['action'] === 'verify_password_only') {
         if (!isset($_SESSION['admin_id'])) {
@@ -65,6 +335,7 @@ try {
         exit();
     }
 
+    // FROM HERE ON, RESPONSES ARE JSON
     header('Content-Type: application/json');
 
     if (isset($_POST['action']) && $_POST['action'] === 'update_admin_profile') {
@@ -127,14 +398,15 @@ try {
 
         $original_filename = basename($_FILES["excel_file"]["name"]);
         $fallback_province = $_POST['province_id'] ?? 1;
+        
         $target_year = !empty($_POST['target_year']) ? $_POST['target_year'] : null;
+        
         $final_province_id = detectProvinceId($original_filename, $fallback_province);
         
         $clean_filename = time() . "_" . preg_replace("/[^a-zA-Z0-9.\-_]/", "", $original_filename);
         $target_file = $target_dir . $clean_filename;
 
         if (move_uploaded_file($_FILES["excel_file"]["tmp_name"], $target_file)) {
-            // PHP NO LONGER PARSES THE EXCEL FILE HERE. IT IS INSTANT.
             $stmt = $conn->prepare("INSERT INTO uploaded_files (province_id, target_year, original_filename) VALUES (?, ?, ?)");
             $stmt->execute([$final_province_id, $target_year, $clean_filename]);
             
@@ -270,31 +542,19 @@ try {
     if (isset($request['action']) && $request['action'] === 'save_chunk') {
         $file_id = $request['file_id'];
         $province_id = $request['province_id'];
-        $srp_date_label = isset($request['srp_date_label']) ? $request['srp_date_label'] : null;
         $chunk = $request['data'];
 
-        // --- UPDATE YEAR AND EXTRACTED SRP DATE ---
         if (count($chunk) > 0 && !empty($chunk[0]['year'])) {
             $actual_year = $chunk[0]['year'];
-            if ($srp_date_label) {
-                $stmtUpdate = $conn->prepare("UPDATE uploaded_files SET target_year = ?, srp_date_label = ? WHERE id = ?");
-                $stmtUpdate->execute([$actual_year, $srp_date_label, $file_id]);
-            } else {
-                $stmtUpdate = $conn->prepare("UPDATE uploaded_files SET target_year = ? WHERE id = ?");
-                $stmtUpdate->execute([$actual_year, $file_id]);
-            }
-        } elseif ($srp_date_label) {
-            $stmtUpdate = $conn->prepare("UPDATE uploaded_files SET srp_date_label = ? WHERE id = ?");
-            $stmtUpdate->execute([$srp_date_label, $file_id]);
+            $stmtUpdateYear = $conn->prepare("UPDATE uploaded_files SET target_year = ? WHERE id = ?");
+            $stmtUpdateYear->execute([$actual_year, $file_id]);
         }
 
         $conn->beginTransaction();
 
         try {
-            // MASSIVE SPEED OPTIMIZATION: THE "IN-MEMORY DICTIONARY" METHOD
             $stores = []; $periods = []; $types = []; $cats = []; $brands = []; $prods = []; $variants = [];
 
-            // Load Existing Masterlists into Memory
             $stmt = $conn->prepare("SELECT id, store_name FROM stores WHERE province_id = ?");
             $stmt->execute([$province_id]);
             while($r = $stmt->fetch(PDO::FETCH_ASSOC)) $stores[$r['store_name']] = $r['id'];
@@ -317,7 +577,6 @@ try {
             $stmt = $conn->query("SELECT id, product_id, specifications FROM product_variants");
             while($r = $stmt->fetch(PDO::FETCH_ASSOC)) $variants[$r['product_id'].'~_~'.$r['specifications']] = $r['id'];
 
-            // Prepare single-insert statements for *new* items only
             $insStore = $conn->prepare("INSERT INTO stores (store_name, province_id) VALUES (?, ?)");
             $insPeriod = $conn->prepare("INSERT INTO monitoring_periods (year, month, week_number, date_range_label) VALUES (?, ?, ?, ?)");
             $insType = $conn->prepare("INSERT INTO commodity_types (type_code, type_name) VALUES (?, ?)");
@@ -331,7 +590,6 @@ try {
             $mappedRecords = [];
             $periodIdsForChunk = [];
 
-            // FIRST PASS: Map all text names to Database IDs via RAM. Instantly insert missing.
             foreach ($chunk as $row) {
                 $store_name = substr(trim((string)$row['store']), 0, 145);
                 $date_label = substr(trim((string)$row['date_label']), 0, 48);
@@ -379,7 +637,6 @@ try {
                 $periodIdsForChunk[$period_id] = $period_id;
             }
 
-            // BULK PRICE INSERTION 
             $existingPrices = [];
             if (!empty($periodIdsForChunk)) {
                 $in = str_repeat('?,', count($periodIdsForChunk) - 1) . '?';
@@ -394,7 +651,6 @@ try {
             $insertPlaceholders = [];
             $insertParams = [];
 
-            // SECOND PASS: Sort into Updates vs Mass Inserts
             foreach ($mappedRecords as $rec) {
                 $k = $rec['variant_id'].'_'.$rec['store_id'].'_'.$rec['period_id'];
                 if (isset($existingPrices[$k])) {
@@ -408,9 +664,8 @@ try {
                 }
             }
 
-            // Execute the Massive Single Query (LOWERED TO 100 TO PREVENT MAX PACKET CRASH)
             if (!empty($insertPlaceholders)) {
-                $chunkSizeLimit = 100; // Adjusted for extreme safety
+                $chunkSizeLimit = 500; 
                 $chunkedPlaceholders = array_chunk($insertPlaceholders, $chunkSizeLimit);
                 $chunkedParams = array_chunk($insertParams, $chunkSizeLimit * 5); 
                 
@@ -442,28 +697,32 @@ try {
         $old = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if ($old) {
+            $conn->exec("CREATE TABLE IF NOT EXISTS product_history (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                variant_id INT,
+                old_name VARCHAR(255),
+                new_name VARCHAR(255),
+                old_specs VARCHAR(255),
+                new_specs VARCHAR(255),
+                old_srp DECIMAL(10,2),
+                new_srp DECIMAL(10,2),
+                changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )");
+
             if ($old['product_name'] != $new_name || $old['specifications'] != $new_specs || $old['srp'] != $new_srp) {
-                $conn->beginTransaction();
-                try {
-                    $histStmt = $conn->prepare("INSERT INTO product_history (variant_id, old_name, new_name, old_specs, new_specs, old_srp, new_srp) VALUES (?, ?, ?, ?, ?, ?, ?)");
-                    $histStmt->execute([
-                        $variant_id, 
-                        $old['product_name'], $new_name, 
-                        $old['specifications'], $new_specs, 
-                        $old['srp'], $new_srp
-                    ]);
+                $histStmt = $conn->prepare("INSERT INTO product_history (variant_id, old_name, new_name, old_specs, new_specs, old_srp, new_srp) VALUES (?, ?, ?, ?, ?, ?, ?)");
+                $histStmt->execute([
+                    $variant_id, 
+                    $old['product_name'], $new_name, 
+                    $old['specifications'], $new_specs, 
+                    $old['srp'], $new_srp
+                ]);
 
-                    $updProd = $conn->prepare("UPDATE products SET product_name = ? WHERE id = ?");
-                    $updProd->execute([$new_name, $product_id]);
+                $updProd = $conn->prepare("UPDATE products SET product_name = ? WHERE id = ?");
+                $updProd->execute([$new_name, $product_id]);
 
-                    $updVar = $conn->prepare("UPDATE product_variants SET specifications = ?, srp = ? WHERE id = ?");
-                    $updVar->execute([$new_specs, $new_srp, $variant_id]);
-                    
-                    $conn->commit();
-                } catch (Exception $e) {
-                    $conn->rollBack();
-                    ob_end_clean(); echo json_encode(['status' => 'error', 'message' => $e->getMessage()]); exit();
-                }
+                $updVar = $conn->prepare("UPDATE product_variants SET specifications = ?, srp = ? WHERE id = ?");
+                $updVar->execute([$new_specs, $new_srp, $variant_id]);
             }
         }
         ob_end_clean();
@@ -527,16 +786,6 @@ try {
 
             $insVar = $conn->prepare("INSERT INTO product_variants (product_id, specifications, srp) VALUES (?, ?, ?)");
             $insVar->execute([$product_id, $specifications, $srp]);
-            $variant_id = $conn->lastInsertId(); 
-
-            // --- INITIAL ADDITION LOG ---
-            $histStmt = $conn->prepare("INSERT INTO product_history (variant_id, old_name, new_name, old_specs, new_specs, old_srp, new_srp) VALUES (?, ?, ?, ?, ?, ?, ?)");
-            $histStmt->execute([
-                $variant_id, 
-                '[New Entry]', $product_name, 
-                '[New Entry]', $specifications, 
-                null, $srp
-            ]);
 
             $conn->commit();
             ob_end_clean();
@@ -556,6 +805,7 @@ try {
         $conn->beginTransaction();
         try {
             $conn->prepare("DELETE FROM price_records WHERE variant_id = ?")->execute([$variant_id]);
+            $conn->exec("CREATE TABLE IF NOT EXISTS product_history (id INT AUTO_INCREMENT PRIMARY KEY, variant_id INT)");
             $conn->prepare("DELETE FROM product_history WHERE variant_id = ?")->execute([$variant_id]);
             $conn->prepare("DELETE FROM product_variants WHERE id = ?")->execute([$variant_id]);
 

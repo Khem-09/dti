@@ -1,7 +1,7 @@
 <?php
     class Database {
     private $host = "localhost";
-    private $db_name = "dti_pricemonitoringsystem";
+    private $db_name = "dti_pricemonitoring_db";
     private $username = "root";
     private $password = "";
 

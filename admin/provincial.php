@@ -112,6 +112,7 @@
         .btn-action i { font-size: 1.05rem; }
         .dropdown-toggle::after { vertical-align: middle; }
         #previewTable th { border: 1px solid #4a5056 !important; }
+        .timer-badge { background: #0A0A3A; color: white; padding: 2px 8px; border-radius: 4px; font-family: monospace; font-size: 0.9rem; margin-left: 10px; }
     </style>
 </head>
 <body style="background-color: #EAEAEA; overflow-x: hidden;">
@@ -193,9 +194,12 @@
                             <h4 class="section-title m-0">Upload File</h4>
                         </div>
                         
-                        <div id="uploadStatus" class="alert alert-info d-none fw-bold shadow-sm">
-                            <i class="bi bi-arrow-repeat spin" id="spinnerIcon"></i> 
-                            <span id="statusText">Initializing upload...</span>
+                        <div id="uploadStatus" class="alert alert-info d-none fw-bold shadow-sm d-flex align-items-center justify-content-between">
+                            <div>
+                                <i class="bi bi-arrow-repeat spin" id="spinnerIcon"></i> 
+                                <span id="statusText">Initializing upload...</span>
+                            </div>
+                            <div id="uploadTimer" class="timer-badge">00:00</div>
                         </div>
 
                         <form id="uploadForm" enctype="multipart/form-data">
@@ -236,7 +240,7 @@
                                     <tr>
                                         <th>File Name</th>
                                         <th>Province</th>
-                                        <th>Date Uploaded</th>
+                                        <th>Upload Timeline</th>
                                         <th class="text-center">Action</th>
                                     </tr>
                                 </thead>
@@ -247,7 +251,14 @@
                                             <tr class="upload-row" data-province="<?= htmlspecialchars($file['province_name']) ?>" data-date="<?= date('Y-m-d', strtotime($file['uploaded_at'])) ?>">
                                                 <td class="text-dark fw-bold file-name-cell text-wrap" style="max-width: 200px;"><?= htmlspecialchars($displayName) ?></td>
                                                 <td class="text-secondary"><?= htmlspecialchars($file['province_name']) ?></td>
-                                                <td class="text-secondary"><?= date('M d, Y h:i A', strtotime($file['uploaded_at'])) ?></td>
+                                                <td class="text-secondary" style="font-size: 0.85rem;">
+                                                    <div class="d-flex flex-column">
+                                                        <span><i class="bi bi-clock-history me-1"></i> <b class="text-dark">Started:</b> <?= date('M d, Y h:i A', strtotime($file['uploaded_at'])) ?></span>
+                                                        <?php if(isset($file['finished_at']) && !empty($file['finished_at'])): ?>
+                                                            <span class="text-success"><i class="bi bi-check-all me-1"></i> <b>Finished:</b> <?= date('h:i:s A', strtotime($file['finished_at'])) ?></span>
+                                                        <?php endif; ?>
+                                                    </div>
+                                                </td>
                                                 <td class="text-center">
                                                     <div class="d-flex flex-wrap gap-2 justify-content-center">
                                                         <a href="provincial.php?part=2&file_id=<?= $file['id'] ?>" class="btn btn-sm btn-outline-primary shadow-sm px-2 px-md-3">
@@ -1048,6 +1059,16 @@
             let file = e.target.files[0];
             if(!file) return;
 
+            // Timer Logic
+            let startTime = Date.now();
+            let timerElement = document.getElementById('uploadTimer');
+            let timerInterval = setInterval(() => {
+                let seconds = Math.floor((Date.now() - startTime) / 1000);
+                let mins = Math.floor(seconds / 60);
+                let secs = seconds % 60;
+                timerElement.innerText = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            }, 1000);
+
             document.getElementById('uploadStatus').classList.remove('d-none');
             const statusText = document.getElementById('statusText');
 
@@ -1062,6 +1083,7 @@
             .then(res => res.json())
             .then(uploadData => {
                 if(uploadData.status !== 'success') {
+                    clearInterval(timerInterval);
                     alert("Upload Error: " + (uploadData.message || "Unknown server error."));
                     location.reload(); return;
                 }
@@ -1371,6 +1393,7 @@
                         });
 
                         if(allFlatData.length === 0) {
+                            clearInterval(timerInterval);
                             alert("No valid products found. Ensure the file follows the format template.");
                             location.reload(); return;
                         }
@@ -1400,6 +1423,7 @@
                                 let saveData = await saveRes.json();
                                 
                                 if(saveData.status !== 'success') {
+                                    clearInterval(timerInterval);
                                     alert("Database Error Details:\n" + saveData.message);
                                     hasError = true;
                                     break;
@@ -1407,11 +1431,13 @@
                             }
 
                             if (!hasError) {
+                                clearInterval(timerInterval);
                                 document.getElementById('spinnerIcon').classList.remove('spin');
                                 document.getElementById('spinnerIcon').classList.replace('bi-arrow-repeat', 'bi-check-circle');
                                 statusText.innerText = `Success! Fully extracted and saved ${allFlatData.length} records. Reloading...`;
                                 setTimeout(() => { window.location.reload(); }, 1500);
                             } else {
+                                clearInterval(timerInterval);
                                 statusText.innerText = `Extraction failed. Check the alert box.`;
                                 document.getElementById('spinnerIcon').classList.remove('spin');
                                 document.getElementById('spinnerIcon').classList.replace('bi-arrow-repeat', 'bi-exclamation-triangle-fill');
@@ -1425,6 +1451,7 @@
                 }, 100);
             })
             .catch(error => {
+                clearInterval(timerInterval);
                 alert("Upload process failed. Check console.");
                 console.error(error);
                 location.reload();
