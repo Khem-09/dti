@@ -34,6 +34,21 @@
 
     $filter_variant_id = isset($_GET['variant_id']) ? $_GET['variant_id'] : ($productsList[0]['variant_id'] ?? null);
 
+    // ------------------------------------------------------------------------------------------
+    // THE SPEED FIX: ONLY run heavy database queries via AJAX.
+    // ------------------------------------------------------------------------------------------
+    if (isset($_GET['fetch_ajax_data'])) {
+        header('Content-Type: application/json');
+        $trendData = [];
+        $marketExtremes = ['lowest' => false, 'highest' => false];
+        if ($filter_variant_id) {
+            $trendData = $admin->getTrendData($filter_variant_id, $filter_year, $filter_month, $filter_province);
+            $marketExtremes = $admin->getMarketExtremes($filter_variant_id, $filter_year, $filter_month, $filter_province);
+        }
+        echo json_encode(['trendData' => $trendData, 'marketExtremes' => $marketExtremes]);
+        exit();
+    }
+
     $selectedProductName = "Select a Product";
     $selectedProductSpecs = "";
     if ($filter_variant_id) {
@@ -54,14 +69,6 @@
                 break;
             }
         }
-    }
-
-    $trendData = [];
-    $marketExtremes = ['lowest' => false, 'highest' => false];
-    
-    if ($filter_variant_id) {
-        $trendData = $admin->getTrendData($filter_variant_id, $filter_year, $filter_month, $filter_province);
-        $marketExtremes = $admin->getMarketExtremes($filter_variant_id, $filter_year, $filter_month, $filter_province);
     }
 ?>
 
@@ -96,6 +103,9 @@
         .store-list-scroll::-webkit-scrollbar-track { background: transparent; }
         .store-list-scroll::-webkit-scrollbar-thumb { background: #ccc; border-radius: 10px; }
         .store-list-scroll::-webkit-scrollbar-thumb:hover { background: #aaa; }
+        
+        .spin { animation: spin 1s linear infinite; }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
     </style>
 </head>
 <body style="background-color: #EAEAEA; overflow-x: hidden;">
@@ -250,86 +260,22 @@
                             </p>
                         </div>
                         
-                        <button class="btn btn-sm btn-outline-primary btn-action shadow-sm px-3" onclick="exportTrendData()" style="height: fit-content; align-self: flex-start;">
-                            <i class="bi bi-download"></i> Export Data
+                        <button class="btn btn-sm btn-primary btn-action shadow-sm px-3" onclick="exportTrendData()" style="height: fit-content; align-self: flex-start;">
+                            <i class="bi bi-download"></i> Export
                         </button>
                     </div>
 
-                    <?php if (!empty($marketExtremes['lowest']) && !empty($marketExtremes['highest'])): ?>
-                    <div class="row g-3 mb-4">
-                        <div class="col-md-6">
-                            <div class="p-3 rounded border shadow-sm h-100" style="background-color: #f0fdf4; border-color: #d1e7dd !important;">
-                                <div class="d-flex align-items-start gap-3">
-                                    <div class="bg-success text-white rounded-circle d-flex align-items-center justify-content-center flex-shrink-0" style="width: 45px; height: 45px;">
-                                        <i class="bi bi-arrow-down-circle fs-5"></i>
-                                    </div>
-                                    <div class="w-100 overflow-hidden">
-                                        <p class="text-success mb-0 fw-bold" style="font-size: 0.85rem;">LOWEST PRICE FOUND</p>
-                                        <h4 class="fw-bold text-dark m-0">₱ <?= number_format($marketExtremes['lowest']['actual_price'], 2) ?></h4>
-                                        <div class="mt-2 pe-1 store-list-scroll" style="max-height: 80px; overflow-y: auto;">
-                                            <ul class="mb-0 ps-3 small text-secondary">
-                                                <?php 
-                                                    $lowStores = [];
-                                                    if (isset($marketExtremes['lowest']['stores']) && is_array($marketExtremes['lowest']['stores'])) {
-                                                        $lowStores = $marketExtremes['lowest']['stores'];
-                                                    } elseif (isset($marketExtremes['lowest']['store_name'])) {
-                                                        $lowStores = explode(', ', $marketExtremes['lowest']['store_name']);
-                                                    }
-                                                    foreach($lowStores as $store): 
-                                                ?>
-                                                    <li title="<?= htmlspecialchars(trim($store)) ?>"><?= htmlspecialchars(trim($store)) ?></li>
-                                                <?php endforeach; ?>
-                                            </ul>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="col-md-6">
-                            <div class="p-3 rounded border shadow-sm h-100" style="background-color: #fff3cd; border-color: #ffe69c !important;">
-                                <div class="d-flex align-items-start gap-3">
-                                    <div class="text-white rounded-circle d-flex align-items-center justify-content-center flex-shrink-0" style="width: 45px; height: 45px; background-color: #fd7e14;">
-                                        <i class="bi bi-arrow-up-circle fs-5"></i>
-                                    </div>
-                                    <div class="w-100 overflow-hidden">
-                                        <p class="mb-0 fw-bold" style="color: #d35400; font-size: 0.85rem;">HIGHEST PRICE FOUND</p>
-                                        <h4 class="fw-bold text-dark m-0">₱ <?= number_format($marketExtremes['highest']['actual_price'], 2) ?></h4>
-                                        <div class="mt-2 pe-1 store-list-scroll" style="max-height: 80px; overflow-y: auto;">
-                                            <ul class="mb-0 ps-3 small text-secondary">
-                                                <?php 
-                                                    $highStores = [];
-                                                    if (isset($marketExtremes['highest']['stores']) && is_array($marketExtremes['highest']['stores'])) {
-                                                        $highStores = $marketExtremes['highest']['stores'];
-                                                    } elseif (isset($marketExtremes['highest']['store_name'])) {
-                                                        $highStores = explode(', ', $marketExtremes['highest']['store_name']);
-                                                    }
-                                                    foreach($highStores as $store): 
-                                                ?>
-                                                    <li title="<?= htmlspecialchars(trim($store)) ?>"><?= htmlspecialchars(trim($store)) ?></li>
-                                                <?php endforeach; ?>
-                                            </ul>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    <?php endif; ?>
+                    <div id="marketExtremesContainer"></div>
 
                     <div class="chart-card w-100">
                         <div class="chart-header flex-column flex-sm-row gap-2">
                             <h6 class="fw-bold m-0 text-dark"><i class="bi bi-graph-up-arrow me-2 text-primary"></i> Price Fluctuation History</h6>
                         </div>
-                        <div class="p-2 p-md-4 w-100" style="height: 450px; position: relative; background-color: #fcfcfc;">
-                            <?php if (empty($trendData)): ?>
-                                <div class="d-flex flex-column justify-content-center align-items-center h-100 text-secondary">
-                                    <i class="bi bi-bar-chart text-muted mb-2" style="font-size: 3rem; opacity: 0.5;"></i>
-                                    <h5 class="fw-bold">No trend data found</h5>
-                                    <p class="text-center small">Try selecting a different product, year, or province.</p>
-                                </div>
-                            <?php else: ?>
-                                <canvas id="trendChart"></canvas>
-                            <?php endif; ?>
+                        <div class="p-2 p-md-4 w-100" id="chartContainer" style="height: 450px; position: relative; background-color: #fcfcfc;">
+                            <div class="d-flex flex-column justify-content-center align-items-center h-100 text-secondary">
+                                <i class="bi bi-hourglass-split spin text-primary mb-2" style="font-size: 3rem;"></i>
+                                <h5 class="fw-bold">Loading trend data...</h5>
+                            </div>
                         </div>
                     </div>
 
@@ -459,7 +405,217 @@
     </div>
 
     <script src="../bootstrap/js/bootstrap.bundle.min.js"></script>
+
     <script>
+        // =======================================================================
+        // THE SPEED FIX: CLIENT-SIDE CACHING LOGIC
+        // =======================================================================
+        
+        const filter_variant_id = "<?= htmlspecialchars($filter_variant_id) ?>";
+        const filter_year = "<?= htmlspecialchars($filter_year) ?>";
+        const filter_month = "<?= htmlspecialchars($filter_month) ?>";
+        const filter_province = "<?= htmlspecialchars($filter_province) ?>";
+        
+        const cacheKey = `trends_cache_${filter_variant_id}_${filter_year}_${filter_month}_${filter_province}`;
+        
+        let trendDataRaw = [];
+        let marketExtremes = {};
+
+        function loadTrendData() {
+            if (!filter_variant_id) return;
+            
+            // 1. Check Browser Memory
+            const cachedData = sessionStorage.getItem(cacheKey);
+            
+            if (cachedData) {
+                // INSTANT LOAD: 0 seconds!
+                const parsed = JSON.parse(cachedData);
+                trendDataRaw = parsed.trendData;
+                marketExtremes = parsed.marketExtremes;
+                renderUI();
+            } else {
+                // 2. Fetch from Database once in the background
+                const url = `trends.php?fetch_ajax_data=1&variant_id=${filter_variant_id}&year=${filter_year}&month=${filter_month}&province_id=${filter_province}`;
+                
+                fetch(url)
+                    .then(res => res.json())
+                    .then(data => {
+                        trendDataRaw = data.trendData;
+                        marketExtremes = data.marketExtremes;
+                        
+                        // 3. Save to memory for next time
+                        sessionStorage.setItem(cacheKey, JSON.stringify(data));
+                        renderUI();
+                    })
+                    .catch(error => {
+                        document.getElementById('chartContainer').innerHTML = '<div class="text-danger fw-bold text-center mt-5">Failed to load trend data.</div>';
+                    });
+            }
+        }
+
+        // Render the Extremes Boxes and the Chart.js Canvas
+        function renderUI() {
+            const extContainer = document.getElementById('marketExtremesContainer');
+            if (marketExtremes.lowest && marketExtremes.highest) {
+                let lowStores = marketExtremes.lowest.stores || (marketExtremes.lowest.store_name ? marketExtremes.lowest.store_name.split(', ') : []);
+                let highStores = marketExtremes.highest.stores || (marketExtremes.highest.store_name ? marketExtremes.highest.store_name.split(', ') : []);
+                
+                let lowStoresHtml = lowStores.map(s => `<li title="${s}">${s}</li>`).join('');
+                let highStoresHtml = highStores.map(s => `<li title="${s}">${s}</li>`).join('');
+
+                extContainer.innerHTML = `
+                    <div class="row g-3 mb-4">
+                        <div class="col-md-6">
+                            <div class="p-3 rounded border shadow-sm h-100" style="background-color: #f0fdf4; border-color: #d1e7dd !important;">
+                                <div class="d-flex align-items-start gap-3">
+                                    <div class="bg-success text-white rounded-circle d-flex align-items-center justify-content-center flex-shrink-0" style="width: 45px; height: 45px;">
+                                        <i class="bi bi-arrow-down-circle fs-5"></i>
+                                    </div>
+                                    <div class="w-100 overflow-hidden">
+                                        <p class="text-success mb-0 fw-bold" style="font-size: 0.85rem;">LOWEST PRICE FOUND</p>
+                                        <h4 class="fw-bold text-dark m-0">₱ ${Number(marketExtremes.lowest.actual_price).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits:2})}</h4>
+                                        <div class="mt-2 pe-1 store-list-scroll" style="max-height: 80px; overflow-y: auto;">
+                                            <ul class="mb-0 ps-3 small text-secondary">
+                                                ${lowStoresHtml}
+                                            </ul>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="p-3 rounded border shadow-sm h-100" style="background-color: #fff3cd; border-color: #ffe69c !important;">
+                                <div class="d-flex align-items-start gap-3">
+                                    <div class="text-white rounded-circle d-flex align-items-center justify-content-center flex-shrink-0" style="width: 45px; height: 45px; background-color: #fd7e14;">
+                                        <i class="bi bi-arrow-up-circle fs-5"></i>
+                                    </div>
+                                    <div class="w-100 overflow-hidden">
+                                        <p class="mb-0 fw-bold" style="color: #d35400; font-size: 0.85rem;">HIGHEST PRICE FOUND</p>
+                                        <h4 class="fw-bold text-dark m-0">₱ ${Number(marketExtremes.highest.actual_price).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits:2})}</h4>
+                                        <div class="mt-2 pe-1 store-list-scroll" style="max-height: 80px; overflow-y: auto;">
+                                            <ul class="mb-0 ps-3 small text-secondary">
+                                                ${highStoresHtml}
+                                            </ul>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } else {
+                extContainer.innerHTML = '';
+            }
+
+            const chartContainer = document.getElementById('chartContainer');
+            if (!trendDataRaw || trendDataRaw.length === 0) {
+                chartContainer.innerHTML = `
+                    <div class="d-flex flex-column justify-content-center align-items-center h-100 text-secondary">
+                        <i class="bi bi-bar-chart text-muted mb-2" style="font-size: 3rem; opacity: 0.5;"></i>
+                        <h5 class="fw-bold">No trend data found</h5>
+                        <p class="text-center small">Try selecting a different product, year, or province.</p>
+                    </div>
+                `;
+            } else {
+                chartContainer.innerHTML = '<canvas id="trendChart"></canvas>';
+                const ctx = document.getElementById('trendChart').getContext('2d');
+                
+                let chartLabels = [];
+                let maxPriceLine = [];
+                let minPriceLine = [];
+
+                trendDataRaw.forEach(row => {
+                    if (row.date_range_label) {
+                        chartLabels.push([row.period_label, "[" + row.date_range_label + "]"]);
+                    } else {
+                        chartLabels.push(row.period_label);
+                    }
+                    maxPriceLine.push(row.max_price);
+                    minPriceLine.push(row.min_price);
+                });
+
+                Chart.defaults.font.family = "'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif";
+                
+                new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: chartLabels,
+                        datasets: [
+                            {
+                                label: 'Highest Recorded Price',
+                                data: maxPriceLine,
+                                borderColor: '#fd7e14',
+                                backgroundColor: 'rgba(253, 126, 20, 0.1)',
+                                borderWidth: 3,
+                                fill: true,
+                                pointBackgroundColor: '#fff',
+                                pointBorderColor: '#fd7e14',
+                                pointRadius: 5,
+                                pointHoverRadius: 8,
+                                tension: 0.4,
+                                spanGaps: true 
+                            },
+                            {
+                                label: 'Lowest Recorded Price',
+                                data: minPriceLine,
+                                borderColor: '#28a745',
+                                backgroundColor: 'rgba(40, 167, 69, 0.1)',
+                                borderWidth: 3,
+                                fill: true,
+                                pointBackgroundColor: '#fff',
+                                pointBorderColor: '#28a745',
+                                pointRadius: 5,
+                                pointHoverRadius: 8,
+                                tension: 0.4,
+                                spanGaps: true 
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: {
+                            mode: 'index',
+                            intersect: false,
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: false,
+                                title: { display: true, text: 'Price in PHP (₱)', font: { weight: 'bold', size: 13 }, color: '#6c757d' },
+                                grid: { color: 'rgba(0,0,0,0.05)', borderDash: [5, 5] }, 
+                                ticks: { font: { weight: '600' } }
+                            },
+                            x: {
+                                grid: { display: false }, 
+                                ticks: { color: '#0A0A3A', font: { weight: 'bold', size: 12 }, maxRotation: 45, minRotation: 0 }
+                            }
+                        },
+                        plugins: {
+                            legend: { 
+                                position: 'top', 
+                                labels: { font: { weight: 'bold', size: 13 }, padding: 15, usePointStyle: true } 
+                            },
+                            tooltip: {
+                                backgroundColor: 'rgba(10, 10, 58, 0.9)',
+                                titleFont: { size: 14 },
+                                bodyFont: { size: 13, weight: 'bold' },
+                                padding: 12,
+                                cornerRadius: 8,
+                                callbacks: {
+                                    label: function(context) {
+                                        return ' ' + context.dataset.label + ': ₱ ' + Number(context.raw).toFixed(2);
+                                    }
+                                }
+                            }
+                        }
+                    }          
+                });
+            }
+        }
+
+        // Fire the loader as soon as the page opens
+        document.addEventListener("DOMContentLoaded", loadTrendData);
+
         const selectEl = document.getElementById('productSelect');
         const allOptions = Array.from(selectEl.options);
         
@@ -504,101 +660,34 @@
             form.submit();
         }
 
-        const trendDataRaw = <?= json_encode($trendData) ?>;
         const locName = "<?= addslashes($selectedProvinceName) ?>";
-        
-        if (trendDataRaw && trendDataRaw.length > 0) {
-            const ctx = document.getElementById('trendChart').getContext('2d');
-            
-            let chartLabels = [];
-            let maxPriceLine = [];
-            let minPriceLine = [];
+        const pNameStr = "<?= addslashes(preg_replace('/[^a-zA-Z0-9]/', '_', $selectedProductName)) ?>";
+        const fYrStr = "<?= $filter_year ?>";
 
-            trendDataRaw.forEach(row => {
-                if (row.date_range_label) {
-                    chartLabels.push([row.period_label, "[" + row.date_range_label + "]"]);
-                } else {
-                    chartLabels.push(row.period_label);
-                }
-                maxPriceLine.push(row.max_price);
-                minPriceLine.push(row.min_price);
-            });
-
-            Chart.defaults.font.family = "'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif";
+        function exportTrendData() {
+            if(!trendDataRaw || trendDataRaw.length === 0) {
+                alert("No trend data available to export.");
+                return;
+            }
             
-            new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: chartLabels,
-                    datasets: [
-                        {
-                            label: 'Highest Recorded Price',
-                            data: maxPriceLine,
-                            borderColor: '#fd7e14',
-                            backgroundColor: 'rgba(253, 126, 20, 0.1)',
-                            borderWidth: 3,
-                            fill: true,
-                            pointBackgroundColor: '#fff',
-                            pointBorderColor: '#fd7e14',
-                            pointRadius: 5,
-                            pointHoverRadius: 8,
-                            tension: 0.4,
-                            spanGaps: true // MAGIC FIX FOR CHART GAPS
-                        },
-                        {
-                            label: 'Lowest Recorded Price',
-                            data: minPriceLine,
-                            borderColor: '#28a745',
-                            backgroundColor: 'rgba(40, 167, 69, 0.1)',
-                            borderWidth: 3,
-                            fill: true,
-                            pointBackgroundColor: '#fff',
-                            pointBorderColor: '#28a745',
-                            pointRadius: 5,
-                            pointHoverRadius: 8,
-                            tension: 0.4,
-                            spanGaps: true // MAGIC FIX FOR CHART GAPS
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    interaction: {
-                        mode: 'index',
-                        intersect: false,
-                    },
-                    scales: {
-                        y: {
-                            beginAtZero: false,
-                            title: { display: true, text: 'Price in PHP (₱)', font: { weight: 'bold', size: 13 }, color: '#6c757d' },
-                            grid: { color: 'rgba(0,0,0,0.05)', borderDash: [5, 5] }, 
-                            ticks: { font: { weight: '600' } }
-                        },
-                        x: {
-                            grid: { display: false }, 
-                            ticks: { color: '#0A0A3A', font: { weight: 'bold', size: 12 }, maxRotation: 45, minRotation: 0 }
-                        }
-                    },
-                    plugins: {
-                        legend: { 
-                            position: 'top', 
-                            labels: { font: { weight: 'bold', size: 13 }, padding: 15, usePointStyle: true } 
-                        },
-                        tooltip: {
-                            backgroundColor: 'rgba(10, 10, 58, 0.9)',
-                            titleFont: { size: 14 },
-                            bodyFont: { size: 13, weight: 'bold' },
-                            padding: 12,
-                            cornerRadius: 8,
-                            callbacks: {
-                                label: function(context) {
-                                    return ' ' + context.dataset.label + ': ₱ ' + Number(context.raw).toFixed(2);
-                                }
-                            }
-                        }
-                    }
-                }          
+            showConfirmModal('Export Trend Data', 'Are you sure you want to generate and download this trend graph data?', 'primary', '<i class="bi bi-download"></i> Export', function() {
+                let wb = XLSX.utils.book_new();
+                let wsData = [["Period", "Date Range", "Lowest Price (₱)", "Highest Price (₱)"]];
+                
+                trendDataRaw.forEach(row => {
+                    wsData.push([
+                        row.period_label,
+                        row.date_range_label || "Full Month",
+                        row.min_price,
+                        row.max_price
+                    ]);
+                });
+                
+                let ws = XLSX.utils.aoa_to_sheet(wsData);
+                XLSX.utils.book_append_sheet(wb, ws, "Price Trend");
+                
+                let cleanLoc = locName.replace(/[^a-zA-Z0-9]/g, '_');
+                XLSX.writeFile(wb, `Trend_${cleanLoc}_${pNameStr}_${fYrStr}.xlsx`);
             });
         }
 
@@ -750,34 +839,6 @@
                     }
                 } catch(err) { alert("Connection error."); }
                 btn.innerText = origText; btn.disabled = false;
-            });
-        }
-
-        function exportTrendData() {
-            if(!trendDataRaw || trendDataRaw.length === 0) {
-                alert("No trend data available to export.");
-                return;
-            }
-            
-            showConfirmModal('Export Trend Data', 'Are you sure you want to generate and download this trend graph data?', 'primary', '<i class="bi bi-download"></i> Export', function() {
-                let wb = XLSX.utils.book_new();
-                let wsData = [["Period", "Date Range", "Lowest Price (₱)", "Highest Price (₱)"]];
-                
-                trendDataRaw.forEach(row => {
-                    wsData.push([
-                        row.period_label,
-                        row.date_range_label || "Full Month",
-                        row.min_price,
-                        row.max_price
-                    ]);
-                });
-                
-                let ws = XLSX.utils.aoa_to_sheet(wsData);
-                XLSX.utils.book_append_sheet(wb, ws, "Price Trend");
-                
-                let cleanName = "<?= addslashes(preg_replace('/[^a-zA-Z0-9]/', '_', $selectedProductName)) ?>";
-                let cleanLoc = "<?= addslashes(preg_replace('/[^a-zA-Z0-9]/', '_', $selectedProvinceName)) ?>";
-                XLSX.writeFile(wb, `Trend_${cleanLoc}_${cleanName}_<?= $filter_year ?>.xlsx`);
             });
         }
     </script>

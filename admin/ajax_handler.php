@@ -23,8 +23,6 @@ try {
     // EXPORT COMPLIANCE REPORT EXCEL (Uses PhpSpreadsheet to retain SRP text colors)
     // =========================================================================================
     if (isset($_GET['action']) && $_GET['action'] === 'export_compliance_excel') {
-        
-        // FIX: Deep clean the buffer immediately to prevent any stray characters from corrupting the Excel file
         while (ob_get_level() > 0) {
             ob_end_clean();
         }
@@ -36,7 +34,6 @@ try {
 
         if (empty($c_province)) die("Province required.");
 
-        // Added ct.type_code to easily identify which sheet the row belongs to
         $sql = "SELECT p.product_name, b.brand_name, pv.specifications, pv.srp, 
                        st.store_name, pr.actual_price, ct.type_code, ct.type_name, c.category_name,
                        mp.date_range_label, mp.month, mp.year, mp.week_number
@@ -60,22 +57,18 @@ try {
 
         $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
         
-        // Setup First Sheet: Basic Necessities
         $wsBN = $spreadsheet->getActiveSheet();
         $wsBN->setTitle('Basic Necessities');
 
-        // Setup Second Sheet: Prime Commodities
         $wsPC = $spreadsheet->createSheet();
         $wsPC->setTitle('Prime Commodities');
 
         $headers = ['Date / Period', 'Type', 'Category', 'Brand', 'Product Name', 'Specs', 'Store Name', 'SRP (₱)', 'Actual Price (₱)', 'Variance (₱)', 'Status'];
         
-        // Apply Headers and Styling to BN Sheet
         $wsBN->fromArray($headers, NULL, 'A1');
         $wsBN->getStyle('A1:K1')->getFont()->setBold(true);
         $wsBN->getStyle('A1:K1')->getFill()->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)->getStartColor()->setARGB('FFD3D3D3');
 
-        // Apply Headers and Styling to PC Sheet
         $wsPC->fromArray($headers, NULL, 'A1');
         $wsPC->getStyle('A1:K1')->getFont()->setBold(true);
         $wsPC->getStyle('A1:K1')->getFill()->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)->getStartColor()->setARGB('FFD3D3D3');
@@ -90,7 +83,7 @@ try {
             
             $variance = '';
             $status = '';
-            $color = 'FF000000'; // Default black
+            $color = 'FF000000'; 
 
             if (empty($srp) || $srp <= 0) {
                 $status = 'No SRP';
@@ -100,14 +93,13 @@ try {
                 $variance = ($varVal > 0 ? '+' : '') . number_format($varVal, 2);
                 if ($actual > $srp) {
                     $status = 'Non-Compliant (Overpriced)';
-                    $color = 'FFFF0000'; // Red
+                    $color = 'FFFF0000'; 
                 } else {
                     $status = 'Compliant';
-                    $color = 'FF008000'; // Green
+                    $color = 'FF008000'; 
                 }
             }
 
-            // Determine which sheet this row belongs to based on the commodity type
             if (isset($row['type_code']) && ($row['type_code'] === 'BN' || strpos(strtoupper($row['type_name']), 'BASIC') !== false)) {
                 $ws = $wsBN;
                 $rowNum = $bnRowNum;
@@ -130,25 +122,32 @@ try {
             $ws->setCellValueExplicit('J'.$rowNum, $variance, \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING);
             $ws->setCellValue('K'.$rowNum, $status);
 
-            // Apply colors
             $ws->getStyle("I{$rowNum}:K{$rowNum}")->getFont()->getColor()->setARGB($color);
         }
 
-        // Auto-size columns for both sheets
         foreach(range('A','K') as $col) {
             $wsBN->getColumnDimension($col)->setAutoSize(true);
             $wsPC->getColumnDimension($col)->setAutoSize(true);
         }
 
-        // Ensure the file opens on the BN sheet by default
         $spreadsheet->setActiveSheetIndex(0);
 
-        // Deep clean all output buffers before initiating download
         while (ob_get_level() > 0) {
             ob_end_clean();
         }
         
-        $filename = "SRP_Compliance_Tracker_{$c_year}.xlsx";
+        try {
+            $provStmt = $conn->prepare("SELECT province_name FROM provinces WHERE id = ?");
+            $provStmt->execute([$c_province]);
+            $provName = $provStmt->fetchColumn();
+        } catch (Exception $e) {
+            $provName = null;
+        }
+
+        $provLabel = !empty($provName) ? $provName : $c_province;
+        $provLabel = preg_replace('/[^A-Za-z0-9]/', '_', $provLabel);
+
+        $filename = "SRP_Compliance_Tracker_{$provLabel}_{$c_year}.xlsx";
         header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         header('Content-Disposition: attachment;filename="'.$filename.'"');
         header('Cache-Control: max-age=0');
@@ -158,7 +157,7 @@ try {
     }
 
     // =========================================================================================
-    // EXPORT COLORED EXCEL PREVIEW (Must be at the very top before any JSON headers are sent!)
+    // EXPORT COLORED EXCEL PREVIEW
     // =========================================================================================
     if (isset($_GET['action']) && $_GET['action'] === 'export_colored_preview') {
         
@@ -200,7 +199,6 @@ try {
             $srpCol = -1;
             $storeStartCol = -1;
 
-            // Find Header Row
             for ($r = 1; $r <= min(30, $highestRow); $r++) {
                 $rowStr = "";
                 for ($c = 1; $c <= $highestColumnIndex; $c++) {
@@ -423,9 +421,21 @@ try {
         exit();
     }
 
+    // FIX: Add endpoint to properly mark the file's 'finished_at' timestamp once all chunks complete
+    if (isset($_POST['action']) && $_POST['action'] === 'mark_file_finished') {
+        $file_id = $_POST['file_id'];
+        $stmt = $conn->prepare("UPDATE uploaded_files SET finished_at = CURRENT_TIMESTAMP WHERE id = ?");
+        if ($stmt->execute([$file_id])) {
+            ob_end_clean(); echo json_encode(['status' => 'success']);
+        } else {
+            ob_end_clean(); echo json_encode(['status' => 'error', 'message' => 'Failed to stamp timestamp.']);
+        }
+        exit();
+    }
+
     if (isset($_POST['action']) && $_POST['action'] === 'build_and_save_report') {
         set_time_limit(0);
-        ini_set('memory_limit', '-1');
+        ini_set('memory_limit', '1024M');
         
         $province_id = !empty($_POST['province_id']) ? $_POST['province_id'] : null;
         $year = $_POST['year'];
@@ -543,11 +553,24 @@ try {
         $file_id = $request['file_id'];
         $province_id = $request['province_id'];
         $chunk = $request['data'];
+        
+        // FIX: Capture the srp_date_label sent from JS
+        $srp_date_label = $request['srp_date_label'] ?? null;
+
+        // Auto-create column if missing to prevent crash
+        try {
+            $conn->query("SELECT srp_date_label FROM uploaded_files LIMIT 1");
+        } catch (Exception $e) {
+            $conn->exec("ALTER TABLE uploaded_files ADD COLUMN srp_date_label VARCHAR(100) NULL");
+        }
 
         if (count($chunk) > 0 && !empty($chunk[0]['year'])) {
             $actual_year = $chunk[0]['year'];
-            $stmtUpdateYear = $conn->prepare("UPDATE uploaded_files SET target_year = ? WHERE id = ?");
-            $stmtUpdateYear->execute([$actual_year, $file_id]);
+            $stmtUpdateYear = $conn->prepare("UPDATE uploaded_files SET target_year = ?, srp_date_label = COALESCE(?, srp_date_label) WHERE id = ?");
+            $stmtUpdateYear->execute([$actual_year, $srp_date_label, $file_id]);
+        } elseif ($srp_date_label) {
+            $stmtUpdateLabel = $conn->prepare("UPDATE uploaded_files SET srp_date_label = ? WHERE id = ?");
+            $stmtUpdateLabel->execute([$srp_date_label, $file_id]);
         }
 
         $conn->beginTransaction();
@@ -555,35 +578,37 @@ try {
         try {
             $stores = []; $periods = []; $types = []; $cats = []; $brands = []; $prods = []; $variants = [];
 
+            // FIX: Array mappings are strictly lowercased to prevent PHP array-misses creating MySQL Duplicate Key crashes
             $stmt = $conn->prepare("SELECT id, store_name FROM stores WHERE province_id = ?");
             $stmt->execute([$province_id]);
-            while($r = $stmt->fetch(PDO::FETCH_ASSOC)) $stores[$r['store_name']] = $r['id'];
+            while($r = $stmt->fetch(PDO::FETCH_ASSOC)) $stores[strtolower(trim($r['store_name']))] = $r['id'];
 
             $stmt = $conn->query("SELECT id, year, month, week_number, date_range_label FROM monitoring_periods");
-            while($r = $stmt->fetch(PDO::FETCH_ASSOC)) $periods[$r['year'].'~_~'.$r['month'].'~_~'.$r['week_number'].'~_~'.$r['date_range_label']] = $r['id'];
+            while($r = $stmt->fetch(PDO::FETCH_ASSOC)) $periods[$r['year'].'~_~'.$r['month'].'~_~'.$r['week_number'].'~_~'.strtolower(trim($r['date_range_label']))] = $r['id'];
 
             $stmt = $conn->query("SELECT id, type_code FROM commodity_types");
-            while($r = $stmt->fetch(PDO::FETCH_ASSOC)) $types[$r['type_code']] = $r['id'];
+            while($r = $stmt->fetch(PDO::FETCH_ASSOC)) $types[strtolower(trim($r['type_code']))] = $r['id'];
 
             $stmt = $conn->query("SELECT id, category_name FROM categories");
-            while($r = $stmt->fetch(PDO::FETCH_ASSOC)) $cats[$r['category_name']] = $r['id'];
+            while($r = $stmt->fetch(PDO::FETCH_ASSOC)) $cats[strtolower(trim($r['category_name']))] = $r['id'];
 
             $stmt = $conn->query("SELECT id, brand_name FROM brands");
-            while($r = $stmt->fetch(PDO::FETCH_ASSOC)) $brands[$r['brand_name']] = $r['id'];
+            while($r = $stmt->fetch(PDO::FETCH_ASSOC)) $brands[strtolower(trim($r['brand_name']))] = $r['id'];
 
             $stmt = $conn->query("SELECT id, type_id, category_id, brand_id, product_name FROM products");
-            while($r = $stmt->fetch(PDO::FETCH_ASSOC)) $prods[$r['type_id'].'~_~'.$r['category_id'].'~_~'.$r['brand_id'].'~_~'.$r['product_name']] = $r['id'];
+            while($r = $stmt->fetch(PDO::FETCH_ASSOC)) $prods[$r['type_id'].'~_~'.$r['category_id'].'~_~'.$r['brand_id'].'~_~'.strtolower(trim($r['product_name']))] = $r['id'];
 
             $stmt = $conn->query("SELECT id, product_id, specifications FROM product_variants");
-            while($r = $stmt->fetch(PDO::FETCH_ASSOC)) $variants[$r['product_id'].'~_~'.$r['specifications']] = $r['id'];
+            while($r = $stmt->fetch(PDO::FETCH_ASSOC)) $variants[$r['product_id'].'~_~'.strtolower(trim($r['specifications']))] = $r['id'];
 
-            $insStore = $conn->prepare("INSERT INTO stores (store_name, province_id) VALUES (?, ?)");
-            $insPeriod = $conn->prepare("INSERT INTO monitoring_periods (year, month, week_number, date_range_label) VALUES (?, ?, ?, ?)");
-            $insType = $conn->prepare("INSERT INTO commodity_types (type_code, type_name) VALUES (?, ?)");
-            $insCat = $conn->prepare("INSERT INTO categories (category_name) VALUES (?)");
-            $insBrand = $conn->prepare("INSERT INTO brands (brand_name) VALUES (?)");
-            $insProd = $conn->prepare("INSERT INTO products (type_id, category_id, brand_id, product_name) VALUES (?,?,?,?)");
-            $insVariant = $conn->prepare("INSERT INTO product_variants (product_id, specifications, srp) VALUES (?,?,?)");
+            // FIX: Added 'IGNORE' to all INSERT statements to gracefully handle existing data races
+            $insStore = $conn->prepare("INSERT IGNORE INTO stores (store_name, province_id) VALUES (?, ?)");
+            $insPeriod = $conn->prepare("INSERT IGNORE INTO monitoring_periods (year, month, week_number, date_range_label) VALUES (?, ?, ?, ?)");
+            $insType = $conn->prepare("INSERT IGNORE INTO commodity_types (type_code, type_name) VALUES (?, ?)");
+            $insCat = $conn->prepare("INSERT IGNORE INTO categories (category_name) VALUES (?)");
+            $insBrand = $conn->prepare("INSERT IGNORE INTO brands (brand_name) VALUES (?)");
+            $insProd = $conn->prepare("INSERT IGNORE INTO products (type_id, category_id, brand_id, product_name) VALUES (?,?,?,?)");
+            $insVariant = $conn->prepare("INSERT IGNORE INTO product_variants (product_id, specifications, srp) VALUES (?,?,?)");
             $updVariant = $conn->prepare("UPDATE product_variants SET srp = ? WHERE id = ?");
             $updPrice = $conn->prepare("UPDATE price_records SET actual_price = ?, file_id = ? WHERE id = ?");
 
@@ -592,39 +617,116 @@ try {
 
             foreach ($chunk as $row) {
                 $store_name = substr(trim((string)$row['store']), 0, 145);
+                $store_key = strtolower($store_name);
+
                 $date_label = substr(trim((string)$row['date_label']), 0, 48);
+                $date_key = strtolower($date_label);
+
                 $type_code  = substr(trim((string)$row['type_code']), 0, 10);
+                $type_code_key = strtolower($type_code);
+
                 $type_name  = substr(trim((string)$row['type_name']), 0, 48);
+
                 $cat_name   = substr(trim((string)$row['cat']), 0, 95);
+                $cat_key = strtolower($cat_name);
+
                 $brand_name = substr(trim((string)$row['brand']), 0, 95);
+                $brand_key = strtolower($brand_name);
+
                 $prod_name  = substr(trim((string)$row['prod']), 0, 145);
+                $prod_key = strtolower($prod_name);
+
                 $specs      = substr(trim((string)$row['specs']), 0, 95);
+                $specs_key = strtolower($specs);
+                
                 $srp        = $row['srp'];
                 $price      = $row['price'];
 
-                if(!isset($stores[$store_name])) { $insStore->execute([$store_name, $province_id]); $stores[$store_name] = $conn->lastInsertId(); }
-                $store_id = $stores[$store_name];
+                // FIX: Retrieve IDs safely even if the INSERT was ignored due to preexisting data
+                if(!isset($stores[$store_key])) { 
+                    $insStore->execute([$store_name, $province_id]); 
+                    $newId = $conn->lastInsertId();
+                    if(!$newId) {
+                        $s=$conn->prepare("SELECT id FROM stores WHERE store_name=? AND province_id=?");
+                        $s->execute([$store_name, $province_id]);
+                        $newId=$s->fetchColumn();
+                    }
+                    $stores[$store_key] = $newId; 
+                }
+                $store_id = $stores[$store_key];
 
-                $pK = $row['year'].'~_~'.$row['month'].'~_~'.$row['week'].'~_~'.$date_label;
-                if(!isset($periods[$pK])) { $insPeriod->execute([$row['year'], $row['month'], $row['week'], $date_label]); $periods[$pK] = $conn->lastInsertId(); }
+                $pK = $row['year'].'~_~'.$row['month'].'~_~'.$row['week'].'~_~'.$date_key;
+                if(!isset($periods[$pK])) { 
+                    $insPeriod->execute([$row['year'], $row['month'], $row['week'], $date_label]); 
+                    $newId = $conn->lastInsertId();
+                    if(!$newId) {
+                        $s=$conn->prepare("SELECT id FROM monitoring_periods WHERE year=? AND month=? AND week_number=? AND date_range_label=?");
+                        $s->execute([$row['year'], $row['month'], $row['week'], $date_label]);
+                        $newId=$s->fetchColumn();
+                    }
+                    $periods[$pK] = $newId; 
+                }
                 $period_id = $periods[$pK];
 
-                if(!isset($types[$type_code])) { $insType->execute([$type_code, $type_name]); $types[$type_code] = $conn->lastInsertId(); }
-                $type_id = $types[$type_code];
+                if(!isset($types[$type_code_key])) { 
+                    $insType->execute([$type_code, $type_name]); 
+                    $newId = $conn->lastInsertId();
+                    if(!$newId) {
+                        $s=$conn->prepare("SELECT id FROM commodity_types WHERE type_code=?");
+                        $s->execute([$type_code]);
+                        $newId=$s->fetchColumn();
+                    }
+                    $types[$type_code_key] = $newId; 
+                }
+                $type_id = $types[$type_code_key];
 
-                if(!isset($cats[$cat_name])) { $insCat->execute([$cat_name]); $cats[$cat_name] = $conn->lastInsertId(); }
-                $cat_id = $cats[$cat_name];
+                if(!isset($cats[$cat_key])) { 
+                    $insCat->execute([$cat_name]); 
+                    $newId = $conn->lastInsertId();
+                    if(!$newId) {
+                        $s=$conn->prepare("SELECT id FROM categories WHERE category_name=?");
+                        $s->execute([$cat_name]);
+                        $newId=$s->fetchColumn();
+                    }
+                    $cats[$cat_key] = $newId; 
+                }
+                $cat_id = $cats[$cat_key];
 
-                if(!isset($brands[$brand_name])) { $insBrand->execute([$brand_name]); $brands[$brand_name] = $conn->lastInsertId(); }
-                $brand_id = $brands[$brand_name];
+                if(!isset($brands[$brand_key])) { 
+                    $insBrand->execute([$brand_name]); 
+                    $newId = $conn->lastInsertId();
+                    if(!$newId) {
+                        $s=$conn->prepare("SELECT id FROM brands WHERE brand_name=?");
+                        $s->execute([$brand_name]);
+                        $newId=$s->fetchColumn();
+                    }
+                    $brands[$brand_key] = $newId; 
+                }
+                $brand_id = $brands[$brand_key];
 
-                $prK = $type_id.'~_~'.$cat_id.'~_~'.$brand_id.'~_~'.$prod_name;
-                if(!isset($prods[$prK])) { $insProd->execute([$type_id, $cat_id, $brand_id, $prod_name]); $prods[$prK] = $conn->lastInsertId(); }
+                $prK = $type_id.'~_~'.$cat_id.'~_~'.$brand_id.'~_~'.$prod_key;
+                if(!isset($prods[$prK])) { 
+                    $insProd->execute([$type_id, $cat_id, $brand_id, $prod_name]); 
+                    $newId = $conn->lastInsertId();
+                    if(!$newId) {
+                        $s=$conn->prepare("SELECT id FROM products WHERE type_id=? AND category_id=? AND brand_id=? AND product_name=?");
+                        $s->execute([$type_id, $cat_id, $brand_id, $prod_name]);
+                        $newId=$s->fetchColumn();
+                    }
+                    $prods[$prK] = $newId; 
+                }
                 $product_id = $prods[$prK];
 
-                $vK = $product_id.'~_~'.$specs;
+                $vK = $product_id.'~_~'.$specs_key;
                 if(!isset($variants[$vK])) { 
-                    $insVariant->execute([$product_id, $specs, $srp]); $variants[$vK] = $conn->lastInsertId(); 
+                    $insVariant->execute([$product_id, $specs, $srp]); 
+                    $newId = $conn->lastInsertId();
+                    if(!$newId) {
+                        $s=$conn->prepare("SELECT id FROM product_variants WHERE product_id=? AND specifications=?");
+                        $s->execute([$product_id, $specs]);
+                        $newId=$s->fetchColumn();
+                    }
+                    $variants[$vK] = $newId; 
                 } else {
                     if ($srp !== null) $updVariant->execute([$srp, $variants[$vK]]);
                 }

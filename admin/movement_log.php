@@ -20,15 +20,18 @@
     $admin_first = $adminRow['firstname'] ?? '';
     $admin_last = $adminRow['lastname'] ?? '';
 
-    $historyLogs = $admin->getProductHistory();
-
-    $categories = [];
-    foreach ($historyLogs as $h) {
-        if (!in_array($h['category_name'], $categories)) {
-            $categories[] = $h['category_name'];
-        }
+    // ------------------------------------------------------------------------------------------
+    // THE SPEED FIX: ONLY run heavy database queries via AJAX.
+    // ------------------------------------------------------------------------------------------
+    if (isset($_GET['fetch_ajax_data'])) {
+        header('Content-Type: application/json');
+        echo json_encode($admin->getProductHistory());
+        exit();
     }
-    sort($categories);
+
+    // Lightweight fast query just to populate the category dropdown instantly
+    $stmtCats = $db->query("SELECT DISTINCT category_name FROM categories ORDER BY category_name ASC");
+    $categories = $stmtCats->fetchAll(PDO::FETCH_COLUMN);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -119,7 +122,7 @@
             </nav>
 
             <main class="col-12 col-md-10 p-3 p-md-4" style="background-color: #EAEAEA;">
-                <div class="shadow-sm bg-white p-3 p-md-5" style="min-height: 80vh; border-radius: 0;">
+                <div class="inner-card shadow-sm bg-white p-3 p-md-4 rounded border">
                     
                     <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center mb-2 gap-2">
                         <h2 class="fw-bold m-0" style="color: #0A0A3A; font-size: 26px;">
@@ -163,6 +166,12 @@
                         </div>
                     </div>
 
+                    <div class="mb-3 d-flex justify-content-end">
+                        <button id="exportLogBtn" class="btn btn-primary btn-sm fw-bold shadow-sm" onclick="exportMovementLogToExcel()">
+                            <i class="bi bi-download me-1"></i> Export
+                        </button>
+                    </div>
+
                     <div class="table-responsive border rounded shadow-sm" style="background-color: #f8f9fa; max-height: 600px;">
                         <table class="table table-hover align-middle mb-0 text-nowrap" id="logTable">
                             <thead class="table-light text-secondary sticky-top" style="border-bottom: 1px solid #aaa;">
@@ -173,6 +182,7 @@
                                 </tr>
                             </thead>
                             <tbody id="logTableBody">
+                                <tr><td colspan="3" class="text-center py-5 text-secondary"><i class="bi bi-hourglass-split spin me-2 fs-5"></i> <span class="fw-bold">Loading log data...</span></td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -312,11 +322,43 @@
 
     <script src="../bootstrap/js/bootstrap.bundle.min.js"></script>
     <script>
-        const allLogs = <?php echo json_encode($historyLogs); ?>;
-        let filteredLogs = [...allLogs];
-        
+        // =======================================================================
+        // THE SPEED FIX: CLIENT-SIDE CACHING LOGIC
+        // =======================================================================
+        let allLogs = [];
+        let filteredLogs = [];
         let currentPage = 1;
         let rowsPerPage = 50;
+        
+        const cacheKey = 'movement_log_cache';
+
+        function loadLogData() {
+            const cachedDataString = sessionStorage.getItem(cacheKey);
+            
+            if (cachedDataString) {
+                // INSTANT LOAD
+                allLogs = JSON.parse(cachedDataString);
+                filteredLogs = [...allLogs];
+                filterLogs();
+            } else {
+                // FIRST TIME LOAD
+                fetch('movement_log.php?fetch_ajax_data=1')
+                    .then(res => res.json())
+                    .then(data => {
+                        allLogs = data;
+                        filteredLogs = [...allLogs];
+                        sessionStorage.setItem(cacheKey, JSON.stringify(data));
+                        filterLogs();
+                    })
+                    .catch(error => {
+                        console.error('Error fetching data:', error);
+                        document.getElementById('logTableBody').innerHTML = '<tr><td colspan="3" class="text-center py-5 text-danger fw-bold">Failed to load data.</td></tr>';
+                    });
+            }
+        }
+
+        // Trigger the loader immediately
+        document.addEventListener("DOMContentLoaded", loadLogData);
 
         function changeRowsPerPage() {
             rowsPerPage = parseInt(document.getElementById('rowsPerPage').value);
@@ -324,7 +366,6 @@
             renderTable();
         }
 
-        // --- NEW CLEAR FILTERS FUNCTION ---
         function clearFilters() {
             document.getElementById('fromDate').value = '';
             document.getElementById('toDate').value = '';
@@ -411,7 +452,69 @@
         function prevPage() { if (currentPage > 1) { currentPage--; renderTable(); } }
         function nextPage() { if (currentPage * rowsPerPage < filteredLogs.length) { currentPage++; renderTable(); } }
 
-        document.addEventListener("DOMContentLoaded", filterLogs);
+        // =======================================================================
+        // EXPORT LOGIC
+        // =======================================================================
+        function exportMovementLogToExcel() {
+            if(!filteredLogs || filteredLogs.length === 0) {
+                alert("There is no data to export for this filter selection!");
+                return;
+            }
+            showConfirmModal('Export to Excel', 'Are you sure you want to generate and download this movement log?', 'primary', '<i class="bi bi-file-earmark-excel"></i> Export', function() {
+                const btn = document.getElementById('exportLogBtn');
+                const originalHTML = btn.innerHTML;
+                btn.innerHTML = '<i class="bi bi-hourglass-split spin"></i> Exporting...';
+                btn.disabled = true;
+
+                setTimeout(() => {
+                    try {
+                        let wb = XLSX.utils.book_new();
+                        let headers = ["Date Edited", "Type", "Category", "Brand", "Product Name", "Detail Changed", "Old Value", "New Value"];
+                        
+                        let exportData = [headers];
+
+                        filteredLogs.forEach(h => {
+                            let d = new Date(h.changed_at);
+                            let dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ' ' + d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+                            
+                            let tCode = h.type_code || 'Unknown';
+                            let cat = h.category_name || 'Uncategorized';
+                            let brand = h.brand_name || 'No Brand';
+                            let prod = h.new_name || h.old_name || 'Unknown';
+
+                            // Break down each specific change into its own neat row for the Excel sheet
+                            if (h.old_name !== h.new_name) {
+                                exportData.push([dateStr, tCode, cat, brand, prod, "Name", h.old_name, h.new_name]);
+                            }
+                            if (h.old_specs !== h.new_specs) {
+                                exportData.push([dateStr, tCode, cat, brand, prod, "Specs", h.old_specs, h.new_specs]);
+                            }
+                            if (h.old_srp !== h.new_srp) {
+                                let os = h.old_srp ? "₱" + parseFloat(h.old_srp).toFixed(2) : "None";
+                                let ns = h.new_srp ? "₱" + parseFloat(h.new_srp).toFixed(2) : "None";
+                                exportData.push([dateStr, tCode, cat, brand, prod, "SRP", os, ns]);
+                            }
+                        });
+
+                        let ws = XLSX.utils.aoa_to_sheet(exportData);
+                        
+                        // Set decent column widths
+                        ws['!cols'] = [ {wch: 20}, {wch: 8}, {wch: 20}, {wch: 20}, {wch: 35}, {wch: 15}, {wch: 25}, {wch: 25} ];
+
+                        XLSX.utils.book_append_sheet(wb, ws, "Movement Log");
+                        
+                        let filename = `Masterlist_Movement_Log_${new Date().toISOString().slice(0,10)}.xlsx`;
+                        XLSX.writeFile(wb, filename);
+
+                    } catch(e) {
+                        alert("Export failed: " + e.message);
+                    } finally {
+                        btn.innerHTML = originalHTML;
+                        btn.disabled = false;
+                    }
+                }, 300);
+            });
+        }
 
         // Global Modals Logic
         function showConfirmModal(title, message, colorClass, btnText, callback) {

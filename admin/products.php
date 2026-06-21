@@ -20,24 +20,35 @@
     $admin_first = $adminRow['firstname'] ?? '';
     $admin_last = $adminRow['lastname'] ?? '';
 
-    $products = $admin->getAllProducts();
-
-    $categories = [];
-    foreach ($products as $p) {
-        if (!in_array($p['category_name'], $categories)) {
-            $categories[] = $p['category_name'];
-        }
+    // ------------------------------------------------------------------------------------------
+    // THE SPEED FIX: ONLY run heavy database queries via AJAX.
+    // ------------------------------------------------------------------------------------------
+    if (isset($_GET['fetch_ajax_data'])) {
+        header('Content-Type: application/json');
+        echo json_encode($admin->getAllProducts());
+        exit();
     }
-    sort($categories);
+
+    // Lightweight fast query just to populate the category dropdown instantly
+    $stmtCats = $db->query("SELECT DISTINCT category_name FROM categories ORDER BY category_name ASC");
+    $categories = $stmtCats->fetchAll(PDO::FETCH_COLUMN);
 
     // Fetch the most recent extracted SRP date to use as the default Masterlist "As Of" date
     $defaultExportDate = date('Y-m-d');
     try {
-        $stmtLatestDate = $db->query("SELECT srp_date_label FROM uploaded_files WHERE srp_date_label IS NOT NULL ORDER BY id DESC LIMIT 1");
+        // Automatically add column if it somehow doesn't exist yet to prevent crashes
+        try { $db->query("SELECT srp_date_label FROM uploaded_files LIMIT 1"); } 
+        catch (Exception $e) { $db->exec("ALTER TABLE uploaded_files ADD COLUMN srp_date_label VARCHAR(100) NULL"); }
+
+        $stmtLatestDate = $db->query("SELECT srp_date_label FROM uploaded_files WHERE srp_date_label IS NOT NULL AND srp_date_label != '' ORDER BY id DESC LIMIT 1");
         if ($stmtLatestDate) {
             $latestDate = $stmtLatestDate->fetchColumn();
             if ($latestDate) {
-                $defaultExportDate = $latestDate;
+                // Ensure it formats cleanly for the HTML5 date picker
+                $parsedDate = strtotime($latestDate);
+                if ($parsedDate) {
+                    $defaultExportDate = date('Y-m-d', $parsedDate);
+                }
             } else {
                 $stmtFallback = $db->query("SELECT DATE(uploaded_at) FROM uploaded_files ORDER BY uploaded_at DESC LIMIT 1");
                 $fallbackDate = $stmtFallback ? $stmtFallback->fetchColumn() : false;
@@ -45,10 +56,8 @@
             }
         }
     } catch (Exception $e) {
-        // Safe fallback for older database versions without the new column
-        $stmtFallback = $db->query("SELECT DATE(uploaded_at) FROM uploaded_files ORDER BY uploaded_at DESC LIMIT 1");
-        $fallbackDate = $stmtFallback ? $stmtFallback->fetchColumn() : false;
-        if ($fallbackDate) $defaultExportDate = $fallbackDate;
+        // Safe fallback to today's date if anything fails
+        $defaultExportDate = date('Y-m-d');
     }
 ?>
 <!DOCTYPE html>
@@ -64,6 +73,8 @@
     
     <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
     <style>
+        .spin { animation: spin 1s linear infinite; }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
         .filter-box { background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 15px; margin-bottom: 25px; }
         .btn-action { transition: all 0.2s ease-in-out; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem; }
         .btn-action:hover { transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.15) !important; }
@@ -207,6 +218,7 @@
                                 </tr>
                             </thead>
                             <tbody id="productTableBody">
+                                <tr><td colspan="8" class="text-center py-5 text-secondary"><i class="bi bi-hourglass-split spin me-2 fs-5"></i> <span class="fw-bold">Loading data...</span></td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -469,11 +481,47 @@
     <script src="../bootstrap/js/bootstrap.bundle.min.js"></script>
 
     <script>
-        const allProducts = <?php echo json_encode($products); ?>;
-        let filteredProducts = [...allProducts];
-        
+        // =======================================================================
+        // THE SPEED FIX: CLIENT-SIDE CACHING LOGIC
+        // =======================================================================
+        let allProducts = [];
+        let filteredProducts = [];
         let currentPage = 1;
         let rowsPerPage = 50;
+        
+        const cacheKey = 'products_masterlist_cache';
+
+        function loadProductsData() {
+            const cachedDataString = sessionStorage.getItem(cacheKey);
+            
+            if (cachedDataString) {
+                // INSTANT LOAD: We have it in memory!
+                allProducts = JSON.parse(cachedDataString);
+                filteredProducts = [...allProducts];
+                filterProducts();
+            } else {
+                // FIRST TIME LOAD: Fetch it from PHP in the background
+                fetch('products.php?fetch_ajax_data=1')
+                    .then(response => response.json())
+                    .then(data => {
+                        allProducts = data;
+                        filteredProducts = [...allProducts];
+                        
+                        // Save to memory for next time
+                        sessionStorage.setItem(cacheKey, JSON.stringify(data));
+                        
+                        filterProducts();
+                    })
+                    .catch(error => {
+                        console.error('Error fetching data:', error);
+                        document.getElementById('productTableBody').innerHTML = '<tr><td colspan="8" class="text-center py-5 text-danger fw-bold">Failed to load data.</td></tr>';
+                    });
+            }
+        }
+
+        // Trigger the loader immediately
+        document.addEventListener("DOMContentLoaded", loadProductsData);
+
 
         function changeRowsPerPage() {
             rowsPerPage = parseInt(document.getElementById('rowsPerPage').value);
@@ -509,6 +557,9 @@
         }
 
         function renderTable() {
+            let tbody = document.getElementById('productTableBody');
+            if (!tbody) return;
+
             let start = (currentPage - 1) * rowsPerPage;
             let end = start + rowsPerPage;
             let paginatedItems = filteredProducts.slice(start, end);
@@ -553,7 +604,7 @@
                 });
             }
             
-            document.getElementById('productTableBody').innerHTML = html;
+            tbody.innerHTML = html;
             updatePaginationInfo();
         }
 
@@ -569,8 +620,6 @@
 
         function prevPage() { if (currentPage > 1) { currentPage--; renderTable(); } }
         function nextPage() { if (currentPage * rowsPerPage < filteredProducts.length) { currentPage++; renderTable(); } }
-
-        document.addEventListener("DOMContentLoaded", filterProducts);
 
         function openEditModal(vId, pId, brand, name, specs, srp) {
             document.getElementById('editVariantId').value = vId;
@@ -589,7 +638,16 @@
             
             showConfirmModal('Export Masterlist', 'Are you sure you want to download the product masterlist?', 'primary', '<i class="bi bi-download"></i> Export', function() {
                 let wb = XLSX.utils.book_new();
-                let srpHeader = "Current SRP - " + srpDate;
+                
+                // FIX: Dynamically construct the "SRP DD MMM YYYY (ADJUSTED)" header 
+                let dateObj = new Date(srpDate);
+                let mNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+                let dPart = String(dateObj.getDate()).padStart(2, '0');
+                let mPart = mNames[dateObj.getMonth()];
+                let yPart = dateObj.getFullYear();
+                
+                let srpHeader = "SRP " + dPart + " " + mPart + " " + yPart + " (ADJUSTED)";
+
                 let bnRows = [["Type", "Category", "Brand", "Product Name", "Specifications", srpHeader]];
                 let pcRows = [["Type", "Category", "Brand", "Product Name", "Specifications", srpHeader]];
                 
@@ -621,8 +679,14 @@
                 try {
                     let res = await fetch('ajax_handler.php', { method: 'POST', body: fd });
                     let data = await res.json();
-                    if(data.status === 'success') location.reload(); 
-                    else { alert("Error: " + data.message); btn.innerHTML = origHTML; btn.disabled = false; }
+                    if(data.status === 'success') {
+                        // CRITICAL FIX: The database changed, so we must delete the old memory cache!
+                        sessionStorage.removeItem('products_masterlist_cache');
+                        sessionStorage.removeItem('movement_log_cache');
+                        location.reload(); 
+                    } else { 
+                        alert("Error: " + data.message); btn.innerHTML = origHTML; btn.disabled = false; 
+                    }
                 } catch(err) { alert("Connection failed."); btn.innerHTML = origHTML; btn.disabled = false; }
             });
         }
@@ -641,8 +705,14 @@
                 try {
                     let res = await fetch('ajax_handler.php', { method: 'POST', body: fd });
                     let data = await res.json();
-                    if(data.status === 'success') location.reload(); 
-                    else { alert("Error: " + data.message); btn.innerHTML = origHTML; btn.disabled = false; }
+                    if(data.status === 'success') {
+                        // CRITICAL FIX: Delete the old memory cache so the new product shows up!
+                        sessionStorage.removeItem('products_masterlist_cache');
+                        sessionStorage.removeItem('movement_log_cache');
+                        location.reload(); 
+                    } else { 
+                        alert("Error: " + data.message); btn.innerHTML = origHTML; btn.disabled = false; 
+                    }
                 } catch(err) { alert("Connection failed."); btn.innerHTML = origHTML; btn.disabled = false; }
             });
         }
@@ -656,8 +726,12 @@
                 try {
                     let res = await fetch('ajax_handler.php', { method: 'POST', body: fd });
                     let data = await res.json();
-                    if(data.status === 'success') location.reload(); 
-                    else alert("Error: " + data.message); 
+                    if(data.status === 'success') {
+                        // CRITICAL FIX: Delete the old memory cache so the deleted product goes away!
+                        sessionStorage.removeItem('products_masterlist_cache');
+                        sessionStorage.removeItem('movement_log_cache');
+                        location.reload(); 
+                    } else alert("Error: " + data.message); 
                 } catch(err) { alert("Connection failed."); }
             });
         }

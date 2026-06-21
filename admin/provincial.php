@@ -1,4 +1,9 @@
 <?php
+    // CRITICAL SPEED & STABILITY FIX: Start an Output Buffer immediately. 
+    // This catches ANY hidden warnings or stray whitespaces from database.php/admin.php 
+    // before they can corrupt the JSON response.
+    ob_start();
+
     session_start();
     if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
         header("Location: ../login.php");
@@ -20,13 +25,77 @@
     $admin_first = $adminRow['firstname'] ?? '';
     $admin_last = $adminRow['lastname'] ?? '';
 
+    // FIX: Deep scrub of all associated records when a file is deleted
     if (isset($_GET['delete_file_id'])) {
         $del_id = $_GET['delete_file_id'];
-        $stmt = $db->prepare("DELETE FROM uploaded_files WHERE id = ?");
-        if ($stmt->execute([$del_id])) {
-            echo "<script>alert('File and all its price data deleted successfully.'); window.location.href='provincial.php';</script>";
+        
+        try {
+            $db->beginTransaction();
+            // Destroy all ghost data tied to this file first
+            $stmtScrub = $db->prepare("DELETE FROM price_records WHERE file_id = ?");
+            $stmtScrub->execute([$del_id]);
+            
+            // Delete the file record
+            $stmt = $db->prepare("DELETE FROM uploaded_files WHERE id = ?");
+            $stmt->execute([$del_id]);
+            $db->commit();
+            
+            echo "<script>alert('File and all its associated price data have been completely scrubbed from the system.'); window.location.href='provincial.php';</script>";
+        } catch (Exception $e) {
+            $db->rollBack();
+            echo "<script>alert('Failed to cleanly delete file data.'); window.location.href='provincial.php';</script>";
+        }
+        exit();
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // THE SPEED FIX: ONLY run the heavy database/excel queries if requested via background AJAX
+    // ------------------------------------------------------------------------------------------
+    if (isset($_GET['fetch_ajax_data'])) {
+        $responseData = [];
+        $partAjax = $_GET['part'] ?? 1;
+
+        try {
+            if ($partAjax == 3 && !empty($_GET['province_id'])) {
+                $p_prov = $_GET['province_id'];
+                $p_year = $_GET['year'] ?? '';
+                $p_month = $_GET['month'] ?? '';
+                $p_week = $_GET['week'] ?? '';
+                $p_type = $_GET['type'] ?? 'All';
+
+                $reportData = $admin->getProvincialReport($p_prov, $p_year, $p_month, $p_week, $p_type);
+                $exportData = $admin->getProvincialReport($p_prov, $p_year, $p_month, $p_week, 'All');
+                $responseData = ['reportData' => $reportData, 'exportData' => $exportData];
+                
+            } elseif ($partAjax == 2 && isset($_GET['file_id'])) {
+                $f_id = $_GET['file_id'];
+                $t_sheet = !empty($_GET['sheet']) ? $_GET['sheet'] : null;
+                $previewData = $admin->getExcelPreview($f_id, $t_sheet);
+                
+                if ($previewData === false || $previewData === null) {
+                    $responseData = ['error' => 'Failed to read data. The Excel file might be heavily corrupted or empty.'];
+                } else {
+                    $responseData = $previewData;
+                }
+            }
+        } catch (Exception $e) {
+            $responseData = ['error' => 'System Error: ' . $e->getMessage()];
+        }
+
+        // Deep clean the buffer to destroy any stray characters or warnings
+        // ensuring absolutely nothing but pure JSON is outputted to JavaScript.
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+
+        header('Content-Type: application/json; charset=utf-8');
+        
+        $jsonOutput = json_encode($responseData);
+        // Fallback if the Excel file contains weirdly encoded symbols breaking the JSON
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            echo json_encode(['error' => 'Data encoding error: ' . json_last_error_msg()]);
         } else {
-            echo "<script>alert('Failed to delete file.'); window.location.href='provincial.php';</script>";
+            echo $jsonOutput;
         }
         exit();
     }
@@ -42,7 +111,6 @@
     $filter_week = isset($_GET['week']) ? $_GET['week'] : '';
     
     $filter_type = isset($_GET['type']) ? $_GET['type'] : 'BN'; 
-    $target_sheet = isset($_GET['sheet']) ? $_GET['sheet'] : null;
 
     $provinces = $admin->getProvinces();
     $uploadedFiles = $admin->getUploadedFiles(); 
@@ -72,16 +140,8 @@
     }
     $safe_prov_name = preg_replace('/[^a-zA-Z0-9]/', '_', $current_province_name);
 
-    $reportData = [];
-    $exportData = []; 
-    if ($part == 3 && !empty($filter_province)) {
-        $reportData = $admin->getProvincialReport($filter_province, $filter_year, $filter_month, $filter_week, $filter_type);
-        $exportData = $admin->getProvincialReport($filter_province, $filter_year, $filter_month, $filter_week, 'All');
-    }
-
     $current_preview_prov = 1;
     $current_preview_year = date('Y');
-    $previewData = [];
     if ($part == 2 && isset($_GET['file_id'])) {
         $stmt = $db->prepare("SELECT province_id, target_year FROM uploaded_files WHERE id = ?");
         $stmt->execute([$_GET['file_id']]);
@@ -89,600 +149,408 @@
             $current_preview_prov = $fileRow['province_id'];
             $current_preview_year = $fileRow['target_year'];
         }
-        $previewData = $admin->getExcelPreview($_GET['file_id'], $target_sheet);
     }
+
+    // -------------------------------------------------------------
+    // PULL IN THE MASTER HTML LAYOUT (Head, Top Nav, Sidebars)
+    // -------------------------------------------------------------
+    include '../includes/navigations.php';
 ?>
 
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Provincial Reports - DTI Region IX</title>
-    <link rel="stylesheet" href="../bootstrap/css/bootstrap.min.css">
-    <link rel="stylesheet" href="../bootstrap/icons/bootstrap-icons.css">
-    <link rel="stylesheet" href="../assets/css/provincial.css">
-    <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
-    <style>
-        .spin { animation: spin 1s linear infinite; }
-        @keyframes spin { 100% { transform: rotate(360deg); } }
-        .filter-box { background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 15px; margin-bottom: 25px; }
-        .btn-action { transition: all 0.2s ease-in-out; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem; }
-        .btn-action:hover { transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.15) !important; }
-        .btn-action i { font-size: 1.05rem; }
-        .dropdown-toggle::after { vertical-align: middle; }
-        #previewTable th { border: 1px solid #4a5056 !important; }
-        .timer-badge { background: #0A0A3A; color: white; padding: 2px 8px; border-radius: 4px; font-family: monospace; font-size: 0.9rem; margin-left: 10px; }
-    </style>
-</head>
-<body style="background-color: #EAEAEA; overflow-x: hidden;">
+<style>
+    .spin { animation: spin 1.5s linear infinite; }
+    @keyframes spin { 100% { transform: rotate(360deg); } }
+</style>
 
-   <nav class="navbar navbar-light bg-white shadow-sm px-3 px-md-4 d-flex justify-content-between w-100">
-        <div class="d-flex align-items-center">
-            <button class="btn btn-light d-md-none me-2 border-0 shadow-sm" type="button" data-bs-toggle="offcanvas" data-bs-target="#mobileSidebar" aria-controls="mobileSidebar">
-                <i class="bi bi-list fs-4"></i>
-            </button>
-            <a class="navbar-brand sidebar-brand text-decoration-none d-flex align-items-center" href="#">
-                <img src="../assets/images/DTI_PH-Logo.png" alt="DTI Logo" class="img-fluid" style="max-height: 40px;">
-                <span class="ms-2 fw-bold d-none d-sm-inline" style="color: #0A0A3A; font-size: 1.1rem;">DTI Region IX</span>
-            </a>
+<div class="inner-card shadow-sm bg-white p-3 p-md-4 rounded border">
+    
+    <div id="part1" class="<?php echo ($part == 1) ? '' : 'd-none'; ?>">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h4 class="section-title m-0">Upload File</h4>
+        </div>
+
+        <form id="uploadForm" enctype="multipart/form-data">
+            <input type="hidden" name="province_id" value="<?= !empty($filter_province) ? $filter_province : 1 ?>"> 
+            <input type="hidden" name="target_year" value="<?= date('Y') ?>">
+            <input type="file" name="excel_file" id="fileInput" class="d-none" accept=".xlsx, .xls, .csv">
+            
+            <div class="dropzone mb-4" id="dropzoneBox" style="cursor: pointer;" onclick="document.getElementById('fileInput').click()">
+                <i class="bi bi-file-earmark-arrow-down dropzone-icon"></i>
+                <h6 class="text-secondary fw-normal mt-2">Drag and Drop File here or <span class="text-dark fw-bold text-decoration-underline upload-file">Choose File</span></h6>
+            </div>
+        </form>
+
+        <h4 class="section-title mb-3">Uploaded Files</h4>
+        <div class="filter-box d-flex flex-column flex-lg-row justify-content-between align-items-start align-items-lg-center gap-3">
+            <div class="input-group input-group-sm shadow-sm w-100" style="max-width: 400px;">
+                <span class="input-group-text bg-white border-end-0"><i class="bi bi-search text-secondary"></i></span>
+                <input type="text" id="searchFile" class="form-control border-start-0" placeholder="Search file name..." onkeyup="filterUploadedFiles()">
+            </div>
+            
+            <div class="d-flex flex-wrap gap-2 w-100 justify-content-lg-end">
+                <select id="filterProv" class="form-select form-select-sm border shadow-sm fw-bold text-secondary flex-grow-1" onchange="filterUploadedFiles()" style="min-width: 140px; max-width: 200px;">
+                    <option value="All">All Provinces</option>
+                    <?php foreach($provinces as $p): ?>
+                        <option value="<?= htmlspecialchars($p['province_name']) ?>"><?= htmlspecialchars($p['province_name']) ?></option>
+                    <?php endforeach; ?>
+                </select>
+                
+                <input type="date" id="filterDate" class="form-control form-control-sm border shadow-sm fw-bold text-secondary flex-grow-1" onchange="filterUploadedFiles()" style="min-width: 140px; max-width: 180px;">
+                
+                <button class="btn btn-sm btn-outline-secondary shadow-sm" onclick="clearArchiveFilters()" title="Clear Filters"><i class="bi bi-x-circle"></i></button>
+            </div>
         </div>
         
-        <div class="dropdown">
-            <a href="#" class="d-flex align-items-center text-decoration-none dropdown-toggle" id="dropdownUser" data-bs-toggle="dropdown" aria-expanded="false" style="color: inherit;">
-                <div class="text-end me-3 d-none d-md-block">
-                    <span class="d-block fw-bold text-dark" style="font-size: 0.9rem;"><?= htmlspecialchars($admin_name) ?></span>
-                    <span class="d-block text-secondary" style="font-size: 0.75rem;"><?= htmlspecialchars($admin_role) ?></span>
-                </div>
-                <i class="bi bi-person-circle fs-2 text-secondary"></i>
-            </a>
-            <ul class="dropdown-menu dropdown-menu-end shadow-sm border-0 mt-3" aria-labelledby="dropdownUser" style="min-width: 240px; border-radius: 8px;">
-                <li><h6 class="dropdown-header text-secondary fw-bold" style="font-size: 0.7rem; letter-spacing: 0.5px;">ACCOUNT MANAGEMENT</h6></li>
-                <li><a class="dropdown-item py-2 fw-bold text-secondary" href="#" data-bs-toggle="modal" data-bs-target="#adminProfileModal"><i class="bi bi-gear me-2 fs-6"></i> Account Settings</a></li>
-                <li><hr class="dropdown-divider"></li>
-                <li><a class="dropdown-item py-2 text-danger fw-bold" href="#" onclick="confirmLogout(event)"><i class="bi bi-box-arrow-right me-2 fs-6"></i> Secure Logout</a></li>
-            </ul>
-        </div>
-    </nav>
-
-    <div class="offcanvas offcanvas-start d-md-none" tabindex="-1" id="mobileSidebar" style="background-color: #0A0A3A; width: 280px;">
-        <div class="offcanvas-header border-bottom border-secondary">
-            <h5 class="offcanvas-title text-white fw-bold">Admin Menu</h5>
-            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas" aria-label="Close"></button>
-        </div>
-        <div class="offcanvas-body px-2 py-4">
-            <ul class="nav flex-column">
-                <li class="nav-item"><a class="nav-link py-3 text-white" href="dashboard.php"><i class="bi bi-grid-1x2-fill me-2"></i> Dashboard</a></li>
-                <li class="nav-item">
-                    <a class="nav-link active py-3 fw-bold" href="provincial.php" style="background-color: rgba(255,255,255,0.1); border-left: 4px solid white; color: white;">
-                        <i class="bi bi-file-earmark-text-fill me-2"></i> Provincial Reports
-                    </a>
-                </li>
-                <li class="nav-item"><a class="nav-link py-3 text-white" href="regional.php"><i class="bi bi-folder-fill me-2"></i> Regional Summary</a></li>
-                <li class="nav-item"><a class="nav-link py-3 text-white" href="generated_reports.php"><i class="bi bi-journal-check me-2"></i> Generated Reports</a></li>
-                <li class="nav-item"><a class="nav-link py-3 text-white" href="products.php"><i class="bi bi-tags me-2"></i> Product & SRP</a></li>
-                <li class="nav-item"><a class="nav-link py-3 text-white" href="trends.php"><i class="bi bi-graph-up me-2"></i> Price Trends</a></li>
-            </ul>
-        </div>
-    </div>
-
-    <div class="container-fluid p-0">
-        <div class="row g-0">
-            <nav class="col-md-2 d-none d-md-block sidebar py-4" style="min-height: 100vh; background-color: #0A0A3A;">
-                <div class="position-sticky">
-                    <h5 class="text-white px-3 pb-2 border-bottom border-secondary">Admin Menu</h5>
-                    <ul class="nav flex-column mt-3 px-2">
-                        <li class="nav-item"><a class="nav-link py-3 text-white" href="dashboard.php"><i class="bi bi-grid-1x2-fill me-2"></i> Dashboard</a></li>
-                        <li class="nav-item">
-                            <a class="nav-link active py-3 fw-bold" href="provincial.php" style="background-color: rgba(255,255,255,0.1); border-left: 4px solid white; color: white;">
-                                <i class="bi bi-file-earmark-text-fill me-2"></i> Provincial Reports
-                            </a>
-                        </li>
-                        <li class="nav-item"><a class="nav-link py-3 text-white" href="regional.php"><i class="bi bi-folder-fill me-2"></i> Regional Summary</a></li>
-                        <li class="nav-item"><a class="nav-link py-3 text-white" href="generated_reports.php"><i class="bi bi-journal-check me-2"></i> Generated Reports</a></li>
-                        <li class="nav-item"><a class="nav-link py-3 text-white" href="products.php"><i class="bi bi-tags me-2"></i> Product & SRP</a></li>
-                        <li class="nav-item"><a class="nav-link py-3 text-white" href="trends.php"><i class="bi bi-graph-up me-2"></i> Price Trends</a></li>
-                    </ul>
-                </div>
-            </nav>
-
-            <main class="col-12 col-md-10 content-wrapper p-3 p-md-4">
-                <div class="inner-card shadow-sm bg-white p-3 p-md-4 rounded border">
-                    
-                    <div id="part1" class="<?php echo ($part == 1) ? '' : 'd-none'; ?>">
-                        <div class="d-flex justify-content-between align-items-center mb-4">
-                            <h4 class="section-title m-0">Upload File</h4>
-                        </div>
-                        
-                        <div id="uploadStatus" class="alert alert-info d-none fw-bold shadow-sm d-flex align-items-center justify-content-between">
-                            <div>
-                                <i class="bi bi-arrow-repeat spin" id="spinnerIcon"></i> 
-                                <span id="statusText">Initializing upload...</span>
-                            </div>
-                            <div id="uploadTimer" class="timer-badge">00:00</div>
-                        </div>
-
-                        <form id="uploadForm" enctype="multipart/form-data">
-                            <input type="hidden" name="province_id" value="<?= !empty($filter_province) ? $filter_province : 1 ?>"> 
-                            <input type="hidden" name="target_year" value="<?= date('Y') ?>">
-                            <input type="file" name="excel_file" id="fileInput" class="d-none" accept=".xlsx, .xls, .csv">
-                            
-                            <div class="dropzone mb-4" id="dropzoneBox" style="cursor: pointer;" onclick="document.getElementById('fileInput').click()">
-                                <i class="bi bi-file-earmark-arrow-down dropzone-icon"></i>
-                                <h6 class="text-secondary fw-normal mt-2">Drag and Drop File here or <span class="text-dark fw-bold text-decoration-underline upload-file">Choose File</span></h6>
-                            </div>
-                        </form>
-
-                        <h4 class="section-title mb-3">Uploaded Files</h4>
-                        <div class="filter-box d-flex flex-column flex-lg-row justify-content-between align-items-start align-items-lg-center gap-3">
-                            <div class="input-group input-group-sm shadow-sm w-100" style="max-width: 400px;">
-                                <span class="input-group-text bg-white border-end-0"><i class="bi bi-search text-secondary"></i></span>
-                                <input type="text" id="searchFile" class="form-control border-start-0" placeholder="Search file name..." onkeyup="filterUploadedFiles()">
-                            </div>
-                            
-                            <div class="d-flex flex-wrap gap-2 w-100 justify-content-lg-end">
-                                <select id="filterProv" class="form-select form-select-sm border shadow-sm fw-bold text-secondary flex-grow-1" onchange="filterUploadedFiles()" style="min-width: 140px; max-width: 200px;">
-                                    <option value="All">All Provinces</option>
-                                    <?php foreach($provinces as $p): ?>
-                                        <option value="<?= htmlspecialchars($p['province_name']) ?>"><?= htmlspecialchars($p['province_name']) ?></option>
-                                    <?php endforeach; ?>
-                                </select>
-                                
-                                <input type="date" id="filterDate" class="form-control form-control-sm border shadow-sm fw-bold text-secondary flex-grow-1" onchange="filterUploadedFiles()" style="min-width: 140px; max-width: 180px;">
-                                
-                                <button class="btn btn-sm btn-outline-secondary shadow-sm" onclick="clearArchiveFilters()" title="Clear Filters"><i class="bi bi-x-circle"></i></button>
-                            </div>
-                        </div>
-                        
-                        <div class="table-responsive border rounded shadow-sm">
-                            <table class="table table-hover align-middle mb-0 text-nowrap">
-                                <thead class="table-light text-secondary">
-                                    <tr>
-                                        <th>File Name</th>
-                                        <th>Province</th>
-                                        <th>Upload Timeline</th>
-                                        <th class="text-center">Action</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php if(count($uploadedFiles) > 0): ?>
-                                        <?php foreach($uploadedFiles as $file): ?>
-                                            <?php $displayName = preg_replace('/^[0-9]+_/', '', $file['original_filename']); ?>
-                                            <tr class="upload-row" data-province="<?= htmlspecialchars($file['province_name']) ?>" data-date="<?= date('Y-m-d', strtotime($file['uploaded_at'])) ?>">
-                                                <td class="text-dark fw-bold file-name-cell text-wrap" style="max-width: 200px;"><?= htmlspecialchars($displayName) ?></td>
-                                                <td class="text-secondary"><?= htmlspecialchars($file['province_name']) ?></td>
-                                                <td class="text-secondary" style="font-size: 0.85rem;">
-                                                    <div class="d-flex flex-column">
-                                                        <span><i class="bi bi-clock-history me-1"></i> <b class="text-dark">Started:</b> <?= date('M d, Y h:i A', strtotime($file['uploaded_at'])) ?></span>
-                                                        <?php if(isset($file['finished_at']) && !empty($file['finished_at'])): ?>
-                                                            <span class="text-success"><i class="bi bi-check-all me-1"></i> <b>Finished:</b> <?= date('h:i:s A', strtotime($file['finished_at'])) ?></span>
-                                                        <?php endif; ?>
-                                                    </div>
-                                                </td>
-                                                <td class="text-center">
-                                                    <div class="d-flex flex-wrap gap-2 justify-content-center">
-                                                        <a href="provincial.php?part=2&file_id=<?= $file['id'] ?>" class="btn btn-sm btn-outline-primary shadow-sm px-2 px-md-3">
-                                                            <i class="bi bi-eye"></i> View
-                                                        </a>
-                                                        <button type="button" class="btn btn-sm btn-success shadow-sm px-2 px-md-3" onclick="buildAndNavigateReport(<?= $file['province_id'] ?>, <?= $file['target_year'] ?>, this)">
-                                                            <i class="bi bi-journal-check"></i> Generate
-                                                        </button>
-                                                        <a href="#" class="btn btn-sm btn-outline-danger shadow-sm px-2 px-md-3" onclick="confirmLinkAction(event, 'provincial.php?delete_file_id=<?= $file['id'] ?>', 'Delete File', 'Are you sure you want to delete this uploaded file and all its price records?', 'danger', '<i class=\'bi bi-trash\'></i> Delete')">
-                                                            <i class="bi bi-trash"></i> Delete
-                                                        </a>
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                        <?php endforeach; ?>
-                                    <?php else: ?>
-                                        <tr><td colspan="4" class="text-center text-secondary py-4">No files uploaded yet.</td></tr>
-                                    <?php endif; ?>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-
-                    <div id="part2" class="<?php echo ($part == 2) ? '' : 'd-none'; ?>">
-                        <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center mb-2 gap-2">
-                            <div class="province-header d-flex align-items-center gap-2">
-                                <a href="provincial.php?part=1" class="text-dark text-decoration-none"><i class="bi bi-arrow-left fs-4"></i></a> 
-                                <h3 class="m-0 fw-bold" style="color: #8B0000;">Data Preview</h3>
-                            </div>
-                            
-                            <div class="d-flex align-items-center gap-2">
-                                <span class="fw-bold text-secondary small">Rows per page:</span>
-                                <select id="previewRowsPerPage" class="form-select form-select-sm border shadow-sm fw-bold text-secondary" onchange="changePreviewRowsPerPage()" style="width: 100px;">
-                                    <option value="25">25 rows</option>
-                                    <option value="50" selected>50 rows</option>
-                                    <option value="100">100 rows</option>
-                                    <option value="250">250 rows</option>
-                                    <option value="500">500 rows</option>
-                                </select>
-                            </div>
-                        </div>
-                        <div class="red-line mb-4" style="height: 3px; background-color: #8B0000; width: 100%;"></div>
-
-                        <div class="bg-white border rounded shadow-sm p-3 p-md-4 overflow-hidden">
-                            <?php if (isset($previewData['error'])): ?>
-                                <div class="alert alert-danger mb-0">
-                                    <i class="bi bi-exclamation-triangle-fill me-2"></i> <?= $previewData['error'] ?>
-                                </div>
-                            <?php else: ?>
-                                
-                                <?php if(!empty($previewData['sheets']) && count($previewData['sheets']) > 1): ?>
-                                <div class="mb-3 pb-3 border-bottom d-flex align-items-center flex-wrap gap-2">
-                                    <span class="fw-bold text-secondary me-3"><i class="bi bi-layers"></i> Select Sheet:</span>
-                                    <?php foreach($previewData['sheets'] as $sheet): ?>
-                                        <a href="provincial.php?part=2&file_id=<?= $_GET['file_id'] ?>&sheet=<?= urlencode($sheet) ?>" 
-                                        class="btn btn-sm <?= ($previewData['current_sheet'] == $sheet) ? 'btn-primary shadow-sm' : 'btn-outline-secondary' ?> fw-bold me-2 px-3">
-                                        <?= htmlspecialchars($sheet) ?>
+        <div class="table-responsive border rounded shadow-sm">
+            <table class="table table-hover align-middle mb-0 text-nowrap">
+                <thead class="table-light text-secondary">
+                    <tr>
+                        <th>File Name</th>
+                        <th>Province</th>
+                        <th>Upload Timeline</th>
+                        <th class="text-center">Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if(count($uploadedFiles) > 0): ?>
+                        <?php foreach($uploadedFiles as $file): ?>
+                            <?php $displayName = preg_replace('/^[0-9]+_/', '', $file['original_filename']); ?>
+                            <tr class="upload-row" data-province="<?= htmlspecialchars($file['province_name']) ?>" data-date="<?= date('Y-m-d', strtotime($file['uploaded_at'])) ?>">
+                                <td class="text-dark fw-bold file-name-cell text-wrap" style="max-width: 200px;"><?= htmlspecialchars($displayName) ?></td>
+                                <td class="text-secondary"><?= htmlspecialchars($file['province_name']) ?></td>
+                                <td class="text-secondary" style="font-size: 0.85rem;">
+                                    <div class="d-flex flex-column">
+                                        <span><i class="bi bi-clock-history me-1"></i> <b class="text-dark">Started:</b> <?= date('M d, Y h:i A', strtotime($file['uploaded_at'])) ?></span>
+                                        <?php if(isset($file['finished_at']) && !empty($file['finished_at'])): ?>
+                                            <span class="text-success"><i class="bi bi-check-all me-1"></i> <b>Finished:</b> <?= date('M d, Y h:i A', strtotime($file['finished_at'])) ?></span>
+                                        <?php endif; ?>
+                                    </div>
+                                </td>
+                                <td class="text-center">
+                                    <div class="d-flex flex-wrap gap-2 justify-content-center">
+                                        <a href="provincial.php?part=2&file_id=<?= $file['id'] ?>" class="btn btn-sm btn-outline-primary shadow-sm px-2 px-md-3">
+                                            <i class="bi bi-eye"></i> View
                                         </a>
-                                    <?php endforeach; ?>
-                                </div>
-                                <?php endif; ?>
-
-                                <div id="previewTitleContainer" class="mb-3 text-center text-secondary fw-bold" style="font-size: 0.95rem;"></div>
-
-                                <div class="table-responsive border rounded" style="max-height: 550px;">
-                                    <?php if (!empty($previewData['data'])): ?>
-                                        <table class="table table-bordered table-hover table-sm text-nowrap align-middle mb-0" id="previewTable" style="font-size: 0.85rem;">
-                                            <thead class="table-dark sticky-top" id="previewTableHead" style="z-index: 2;">
-                                            </thead>
-                                            <tbody id="previewTableBody">
-                                            </tbody>
-                                        </table>
-                                    <?php else: ?>
-                                        <div class="text-center py-5 text-secondary">No readable data found in this sheet.</div>
-                                    <?php endif; ?>
-                                </div>
-
-                                <?php if (!empty($previewData['data'])): ?>
-                                <div class="d-flex flex-column flex-sm-row justify-content-between align-items-center mt-3 px-2 gap-2">
-                                    <span class="text-secondary fw-bold" id="previewPageInfo">Loading data...</span>
-                                    <div class="btn-group shadow-sm">
-                                        <button class="btn btn-outline-secondary fw-bold" onclick="previewPrevPage()" id="previewPrevBtn" disabled>Previous</button>
-                                        <button class="btn btn-outline-secondary fw-bold" onclick="previewNextPage()" id="previewNextBtn" disabled>Next</button>
+                                        <button type="button" class="btn btn-sm btn-success shadow-sm px-2 px-md-3" onclick="buildAndNavigateReport(<?= $file['province_id'] ?>, <?= $file['target_year'] ?>, this)">
+                                            <i class="bi bi-journal-check"></i> Generate
+                                        </button>
+                                        <a href="#" class="btn btn-sm btn-outline-danger shadow-sm px-2 px-md-3" onclick="confirmLinkAction(event, 'provincial.php?delete_file_id=<?= $file['id'] ?>', 'Delete File', 'Are you sure you want to completely scrub this uploaded file and all its price records from the database?', 'danger', '<i class=\'bi bi-trash\'></i> Delete')">
+                                            <i class="bi bi-trash"></i> Delete
+                                        </a>
                                     </div>
-                                </div>
-                                <?php endif; ?>
-
-                            <?php endif; ?>
-                        </div>
-                    </div>
-
-                    <div id="part3" class="<?php echo ($part == 3) ? '' : 'd-none'; ?>">
-                        <div class="province-header d-flex align-items-center gap-2 mb-2">
-                            <a href="provincial.php?part=1" class="text-dark text-decoration-none"><i class="bi bi-arrow-left fs-4"></i></a> 
-                            <h3 class="m-0 fw-bold" style="color: #8B0000;">Data Summary</h3>
-                        </div>
-                        <div class="red-line mb-4" style="height: 3px; background-color: #8B0000; width: 100%;"></div>
-
-                        <div class="filter-box d-flex flex-column flex-xl-row justify-content-between align-items-start align-items-xl-center gap-3">
-                            <div class="d-flex align-items-center gap-3 w-100" style="max-width: 300px;">
-                                <span class="fw-bold text-dark">Category:</span>
-                                <div class="btn-group shadow-sm flex-grow-1" role="group">
-                                    <a href="provincial.php?part=3&province_id=<?= $filter_province ?>&year=<?= $filter_year ?>&month=<?= $filter_month ?>&week=<?= $filter_week ?>&type=BN" 
-                                       class="btn btn-sm <?= ($filter_type == 'BN') ? 'btn-primary fw-bold' : 'btn-outline-primary' ?>"> BN</a>
-                                    <a href="provincial.php?part=3&province_id=<?= $filter_province ?>&year=<?= $filter_year ?>&month=<?= $filter_month ?>&week=<?= $filter_week ?>&type=PC" 
-                                       class="btn btn-sm <?= ($filter_type == 'PC') ? 'btn-primary fw-bold' : 'btn-outline-primary' ?>">PC</a>
-                                </div>
-                            </div>
-                            
-                            <form method="GET" action="provincial.php" class="d-flex flex-wrap gap-2 align-items-center w-100 justify-content-xl-end m-0">
-                                <input type="hidden" name="part" value="3">
-                                <input type="hidden" name="province_id" value="<?= $filter_province ?>">
-                                <input type="hidden" name="type" value="<?= htmlspecialchars($filter_type) ?>">
-                                
-                                <select id="rowsPerPage" class="form-select form-select-sm border shadow-sm fw-bold text-secondary flex-grow-1" onchange="changeRowsPerPage()" style="min-width: 100px; max-width: 120px; height: 31px;">
-                                    <option value="25">25 rows</option>
-                                    <option value="50" selected>50 rows</option>
-                                    <option value="100">100 rows</option>
-                                    <option value="250">250 rows</option>
-                                    <option value="500">500 rows</option>
-                                </select>
-                                
-                                <select name="year" class="form-select form-select-sm border shadow-sm fw-bold text-secondary flex-grow-1" onchange="updateFilter(this)" style="min-width: 90px; max-width: 110px;">
-                                    <?php foreach($availableYears as $y): ?>
-                                        <option value="<?= $y['year'] ?>" <?= ($filter_year == $y['year']) ? 'selected' : '' ?>><?= $y['year'] ?></option>
-                                    <?php endforeach; ?>
-                                </select>
-
-                                <select name="month" class="form-select form-select-sm border shadow-sm fw-bold text-secondary flex-grow-1" onchange="updateFilter(this)" style="min-width: 120px; max-width: 150px;">
-                                    <option value="">Yearly Summary</option>
-                                    <?php foreach($availableMonths as $m): ?>
-                                        <option value="<?= $m['month'] ?>" <?= ($filter_month == $m['month']) ? 'selected' : '' ?>><?= $m['month'] ?></option>
-                                    <?php endforeach; ?>
-                                </select>
-
-                                <select name="week" class="form-select form-select-sm border shadow-sm fw-bold text-secondary flex-grow-1" onchange="updateFilter(this)" <?= empty($filter_month) ? 'disabled' : '' ?> style="min-width: 150px; max-width: 200px;">
-                                    <option value="">Monthly Summary</option>
-                                    <?php foreach($availableWeeks as $w): ?>
-                                        <option value="<?= $w['id'] ?>" <?= ($filter_week == $w['id']) ? 'selected' : '' ?>><?= htmlspecialchars($w['date_range_label']) ?></option>
-                                    <?php endforeach; ?>
-                                </select>
-                            </form>
-                        </div>
-
-                        <div class="mb-3 px-2 d-flex flex-column flex-md-row justify-content-between align-items-md-end gap-3" style="font-size: 1rem;">
-                            <div class="text-danger fw-bold" style="line-height: 1.6;">
-                                <?php if (empty($filter_month)): ?>
-                                    Year: <?= htmlspecialchars($filter_year) ?> 
-                                <?php elseif (empty($filter_week)): ?>
-                                    Year: <?= htmlspecialchars($filter_year) ?> | Month: <?= htmlspecialchars($filter_month) ?>
-                                <?php else: ?>
-                                    Year: <?= htmlspecialchars($filter_year) ?> | Month: <?= htmlspecialchars($filter_month) ?> <br>
-                                    Date Range: <?= htmlspecialchars($selected_week_label) ?> <br>
-                                    <?= htmlspecialchars($selected_week_num) ?>
-                                <?php endif; ?>
-                            </div>
-                            
-                            <button id="exportReportBtn" class="btn btn-primary shadow-sm px-4" onclick="exportFullReportToExcel()">
-                                <i class="bi bi-download"></i> Export
-                            </button>
-                        </div>
-
-                        <div class="table-responsive bg-white shadow-sm rounded border" style="max-height: 550px; overflow-y: auto;">
-                            <table class="table table-hover align-middle mb-0 text-nowrap" id="reportTable">
-                                <thead class="table-light sticky-top" style="z-index: 2;">
-                                    <tr style="border-bottom: 2px solid #8B0000;">
-                                        <th class="fw-bold text-secondary text-center" style="width: 50px;">#</th>
-                                        <th class="fw-bold text-secondary">Type</th>
-                                        <th class="fw-bold text-secondary">Category</th>
-                                        <th class="fw-bold text-dark">Brand</th>
-                                        <th class="fw-bold text-dark">Product Name</th>
-                                        <th class="fw-bold text-secondary">Specs</th>
-                                        <th class="fw-bold text-center" style="color: #8B0000;">Price Range</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="reportTableBody">
-                                    </tbody>
-                            </table>
-                        </div>
-                        
-                        <div class="d-flex flex-column flex-sm-row justify-content-between align-items-center mt-3 px-2 gap-2">
-                            <span class="text-secondary fw-bold" id="pageInfo">Loading data...</span>
-                            <div class="btn-group shadow-sm">
-                                <button class="btn btn-outline-secondary fw-bold" onclick="prevPage()" id="prevBtn" disabled>Previous</button>
-                                <button class="btn btn-outline-secondary fw-bold" onclick="nextPage()" id="nextBtn" disabled>Next</button>
-                            </div>
-                        </div>
-
-                    </div>
-
-                </div>
-            </main>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <tr><td colspan="4" class="text-center text-secondary py-4">No files uploaded yet.</td></tr>
+                    <?php endif; ?>
+                </tbody>
+            </table>
         </div>
     </div>
 
-    <div class="modal fade" id="adminProfileModal" tabindex="-1" aria-hidden="true" style="z-index: 1055;">
-        <div class="modal-dialog modal-xl modal-dialog-centered">
-            <div class="modal-content" style="border-radius: 12px; background-color: #f4f6f9;">
-                <div class="modal-header border-0 pb-0 px-4 pt-4">
-                    <div>
-                        <h4 class="modal-title fw-bold" style="color: #0A0A3A;">Account Settings</h4>
-                        <p class="text-secondary small mb-0">Manage your profile details and security credentials</p>
-                    </div>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+    <div id="part2" class="<?php echo ($part == 2) ? '' : 'd-none'; ?>">
+        <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center mb-2 gap-2">
+            <div class="province-header d-flex align-items-center gap-2">
+                <a href="provincial.php?part=1" class="text-dark text-decoration-none"><i class="bi bi-arrow-left fs-4"></i></a> 
+                <h3 class="m-0 fw-bold" style="color: #8B0000;">Data Preview</h3>
+            </div>
+            
+            <div class="d-flex align-items-center gap-3">
+                <div class="d-flex align-items-center gap-2">
+                    <span class="fw-bold text-secondary small">Rows per page:</span>
+                    <select id="previewRowsPerPage" class="form-select form-select-sm border shadow-sm fw-bold text-secondary" onchange="changePreviewRowsPerPage()" style="width: 100px;">
+                        <option value="25">25 rows</option>
+                        <option value="50" selected>50 rows</option>
+                        <option value="100">100 rows</option>
+                        <option value="250">250 rows</option>
+                        <option value="500">500 rows</option>
+                    </select>
                 </div>
-                <div class="modal-body p-4">
-                    <div class="row g-4">
-                        <div class="col-md-5">
-                            <div class="bg-white p-4 rounded shadow-sm border h-100">
-                                <h6 class="fw-bold mb-4 text-secondary"><i class="bi bi-person-lines-fill me-2"></i> Profile Information</h6>
-                                <form id="profileForm" onsubmit="updateAdminProfile(event)">
-                                    <div class="row mb-3 g-2">
-                                        <div class="col-md-6">
-                                            <label class="form-label small fw-bold text-secondary">First Name</label>
-                                            <input type="text" id="adminFirstName" class="form-control bg-light text-secondary" value="<?= htmlspecialchars($admin_first) ?>" required>
-                                        </div>
-                                        <div class="col-md-6">
-                                            <label class="form-label small fw-bold text-secondary">Last Name</label>
-                                            <input type="text" id="adminLastName" class="form-control bg-light text-secondary" value="<?= htmlspecialchars($admin_last) ?>" required>
-                                        </div>
-                                    </div>
-                                    <div class="mb-4">
-                                        <label class="form-label small fw-bold text-secondary">Username</label>
-                                        <div class="input-group">
-                                            <span class="input-group-text bg-light border-end-0"><i class="bi bi-at text-secondary"></i></span>
-                                            <input type="text" id="adminUsername" class="form-control border-start-0 bg-light text-secondary" value="<?= htmlspecialchars($_SESSION['username'] ?? 'admin') ?>" required>
-                                        </div>
-                                    </div>
-                                    <button type="submit" class="btn btn-dark fw-bold w-100 shadow-sm mb-5" style="border-radius: 6px;">Save Profile Changes</button>
-                                </form>
-                                <hr class="text-secondary mb-4">
-                                <h6 class="fw-bold mb-3 text-secondary mt-4"><i class="bi bi-hdd-network me-2"></i> System Administration</h6>
-                                <div class="p-3 bg-light rounded border">
-                                    <p class="small text-secondary mb-3">Download a complete backup of the database system including all price records and product masterlists.</p>
-                                    <div class="text-end">
-                                        <button type="button" class="btn btn-success fw-bold px-3 shadow-sm w-100" style="border-radius: 6px;" onclick="openBackupModal()"><i class="bi bi-download me-1"></i> Download Backup</button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="col-md-7">
-                            <div class="bg-white p-4 rounded shadow-sm border h-100">
-                                <h6 class="fw-bold mb-4 text-secondary"><i class="bi bi-shield-lock-fill me-2" style="color: #fd7e14;"></i> Security & Password</h6>
-                                <form id="passwordForm" onsubmit="updateAdminPassword(event)">
-                                    <div class="mb-4">
-                                        <label class="form-label small fw-bold text-secondary">Current Password</label>
-                                        <div class="input-group">
-                                            <span class="input-group-text bg-light border-end-0"><i class="bi bi-key text-secondary"></i></span>
-                                            <input type="password" id="currentPassword" class="form-control border-start-0 bg-light" placeholder="Enter your current password to verify identity" required>
-                                        </div>
-                                    </div>
-                                    <div class="row mb-4">
-                                        <div class="col-md-6">
-                                            <label class="form-label small fw-bold text-secondary">New Password</label>
-                                            <input type="password" id="newPassword" class="form-control bg-light" placeholder="Type new password" required>
-                                        </div>
-                                        <div class="col-md-6">
-                                            <label class="form-label small fw-bold text-secondary">Confirm New Password</label>
-                                            <input type="password" id="confirmPassword" class="form-control bg-light" placeholder="Type new password again" required>
-                                        </div>
-                                    </div>
-                                    <div class="alert py-2 mt-2 d-flex align-items-center" style="background-color: #fff3cd; border: 1px solid #ffe69c; color: #856404;" role="alert">
-                                        <i class="bi bi-info-circle-fill me-2 fs-5" style="color: #fd7e14;"></i>
-                                        <div class="small">For your security, it is highly recommended to use a password containing at least one number and one special character.</div>
-                                    </div>
-                                    <div class="mt-4 pt-2">
-                                        <button type="submit" class="btn btn-primary fw-bold px-4 shadow-sm w-100 py-2" style="background-color: #107ed9; border: none; border-radius: 6px;">Update Password</button>
-                                    </div>
-                                </form>
-                            </div>
-                        </div>
+            </div>
+        </div>
+        <div class="red-line mb-4" style="height: 3px; background-color: #8B0000; width: 100%;"></div>
+
+        <div class="bg-white border rounded shadow-sm p-3 p-md-4 overflow-hidden">
+            <div id="previewAlertContainer"></div>
+            
+            <div id="sheetButtonsContainer" class="mb-3 pb-3 border-bottom d-flex align-items-center flex-wrap gap-2 d-none"></div>
+
+            <div id="previewTitleContainer" class="mb-3 text-center text-secondary fw-bold" style="font-size: 0.95rem;"></div>
+
+            <div class="table-responsive border rounded" style="max-height: 550px; overflow: auto;">
+                <table class="table table-bordered table-hover table-sm text-nowrap align-middle mb-0" id="previewTable" style="font-size: 0.85rem;">
+                    <thead class="table-dark sticky-top" id="previewTableHead" style="z-index: 2; top: 0;">
+                    </thead>
+                    <tbody id="previewTableBody">
+                        <tr><td colspan="100%" class="text-center py-5 text-secondary"><i class="bi bi-hourglass-split spin me-2 fs-5"></i> <span class="fw-bold">Loading preview data...</span></td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div id="previewPaginationContainer" class="d-flex flex-column flex-sm-row justify-content-between align-items-center mt-3 px-2 gap-2 d-none">
+                <span class="text-secondary fw-bold" id="previewPageInfo">Loading data...</span>
+                <div class="d-flex gap-2">
+                    <div class="btn-group shadow-sm">
+                        <button class="btn btn-sm btn-outline-secondary fw-bold" onclick="previewPrevPage()" id="previewPrevBtn" disabled>Previous</button>
+                        <button class="btn btn-sm btn-outline-secondary fw-bold" onclick="previewNextPage()" id="previewNextBtn" disabled>Next</button>
                     </div>
                 </div>
             </div>
         </div>
     </div>
 
-    <div class="modal fade" id="universalConfirmModal" tabindex="-1" aria-hidden="true" style="z-index: 1060;">
-        <div class="modal-dialog modal-dialog-centered">
-            <div class="modal-content" style="border-radius: 12px; border-top: 5px solid #0A0A3A;">
-                <div class="modal-header border-0 pb-0">
-                    <h5 class="modal-title fw-bold" id="confirmModalTitle">Confirm Action</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body p-4 pt-3 text-secondary" id="confirmModalMessage">
-                    Are you sure you want to proceed?
-                </div>
-                <div class="modal-footer border-0 pt-0 pb-4 px-4 d-flex justify-content-end gap-2">
-                    <button type="button" class="btn btn-outline-secondary fw-bold px-4 shadow-sm" data-bs-dismiss="modal">Cancel</button>
-                    <button type="button" class="btn btn-primary fw-bold px-4 shadow-sm" id="confirmModalBtn">Confirm</button>
+    <div id="part3" class="<?php echo ($part == 3) ? '' : 'd-none'; ?>">
+        <div class="province-header d-flex align-items-center gap-2 mb-2">
+            <a href="provincial.php?part=1" class="text-dark text-decoration-none"><i class="bi bi-arrow-left fs-4"></i></a> 
+            <h3 class="m-0 fw-bold" style="color: #8B0000;">Data Summary</h3>
+        </div>
+        <div class="red-line mb-4" style="height: 3px; background-color: #8B0000; width: 100%;"></div>
+
+        <div class="filter-box d-flex flex-column flex-xl-row justify-content-between align-items-start align-items-xl-center gap-3">
+            <div class="d-flex align-items-center gap-3 w-100" style="max-width: 300px;">
+                <span class="fw-bold text-dark">Category:</span>
+                <div class="btn-group shadow-sm flex-grow-1" role="group">
+                    <a href="provincial.php?part=3&province_id=<?= $filter_province ?>&year=<?= $filter_year ?>&month=<?= $filter_month ?>&week=<?= $filter_week ?>&type=BN" 
+                       class="btn btn-sm <?= ($filter_type == 'BN') ? 'btn-primary fw-bold' : 'btn-outline-primary' ?>">BN</a>
+                    <a href="provincial.php?part=3&province_id=<?= $filter_province ?>&year=<?= $filter_year ?>&month=<?= $filter_month ?>&week=<?= $filter_week ?>&type=PC" 
+                       class="btn btn-sm <?= ($filter_type == 'PC') ? 'btn-primary fw-bold' : 'btn-outline-primary' ?>">PC</a>
                 </div>
             </div>
-        </div>
-    </div>
+            
+            <form method="GET" action="provincial.php" class="d-flex flex-wrap gap-2 align-items-center w-100 justify-content-xl-end m-0">
+                <input type="hidden" name="part" value="3">
+                <input type="hidden" name="province_id" value="<?= $filter_province ?>">
+                <input type="hidden" name="type" value="<?= htmlspecialchars($filter_type) ?>">
+                
+                <select id="rowsPerPage" class="form-select form-select-sm border shadow-sm fw-bold text-secondary flex-grow-1" onchange="changeRowsPerPage()" style="min-width: 100px; max-width: 120px; height: 31px;">
+                    <option value="25">25 rows</option>
+                    <option value="50" selected>50 rows</option>
+                    <option value="100">100 rows</option>
+                    <option value="250">250 rows</option>
+                    <option value="500">500 rows</option>
+                </select>
+                
+                <select name="year" class="form-select form-select-sm border shadow-sm fw-bold text-secondary flex-grow-1" onchange="updateFilter(this)" style="min-width: 90px; max-width: 110px;">
+                    <?php foreach($availableYears as $y): ?>
+                        <option value="<?= $y['year'] ?>" <?= ($filter_year == $y['year']) ? 'selected' : '' ?>><?= $y['year'] ?></option>
+                    <?php endforeach; ?>
+                </select>
 
-    <div class="modal fade" id="backupAuthModal" tabindex="-1" aria-hidden="true" style="z-index: 1060;">
-        <div class="modal-dialog modal-dialog-centered">
-            <div class="modal-content" style="border-radius: 12px; border-top: 5px solid #198754;">
-                <div class="modal-header border-0 pb-0">
-                    <h5 class="modal-title fw-bold text-success"><i class="bi bi-shield-lock me-2"></i>Authenticate Backup</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body p-4 pt-3">
-                    <p class="text-secondary mb-3">Please enter your current admin password to securely download the database backup.</p>
-                    <input type="password" id="backupAuthPassword" class="form-control bg-light" placeholder="Enter Admin Password" required>
-                    <div id="backupAuthError" class="text-danger small mt-2 d-none fw-bold"><i class="bi bi-exclamation-circle"></i> Incorrect password.</div>
-                </div>
-                <div class="modal-footer border-0 pt-0 pb-4 px-4 d-flex justify-content-end gap-2">
-                    <button type="button" class="btn btn-outline-secondary fw-bold px-4 shadow-sm" data-bs-dismiss="modal">Cancel</button>
-                    <button type="button" class="btn btn-success fw-bold px-4 shadow-sm" id="confirmBackupBtn">Verify & Download</button>
-                </div>
+                <select name="month" class="form-select form-select-sm border shadow-sm fw-bold text-secondary flex-grow-1" onchange="updateFilter(this)" style="min-width: 120px; max-width: 150px;">
+                    <option value="">Yearly Summary</option>
+                    <?php foreach($availableMonths as $m): ?>
+                        <option value="<?= $m['month'] ?>" <?= ($filter_month == $m['month']) ? 'selected' : '' ?>><?= $m['month'] ?></option>
+                    <?php endforeach; ?>
+                </select>
+
+                <select name="week" class="form-select form-select-sm border shadow-sm fw-bold text-secondary flex-grow-1" onchange="updateFilter(this)" <?= empty($filter_month) ? 'disabled' : '' ?> style="min-width: 150px; max-width: 200px;">
+                    <option value="">Monthly Summary</option>
+                    <?php foreach($availableWeeks as $w): ?>
+                        <option value="<?= $w['id'] ?>" <?= ($filter_week == $w['id']) ? 'selected' : '' ?>><?= htmlspecialchars($w['date_range_label']) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </form>
+        </div>
+
+        <div class="mb-3 px-2 d-flex flex-column flex-md-row justify-content-between align-items-md-end gap-3" style="font-size: 1rem;">
+            
+            <div class="d-inline-flex align-items-center bg-white border rounded-pill px-3 py-2 shadow-sm" style="border-color: #dee2e6 !important;">
+                <i class="bi bi-calendar-event text-primary fs-5 me-2"></i>
+                <span class="text-secondary fw-bold me-2">Period:</span> 
+                <span class="fw-bold text-dark" style="font-size: 1.05rem;">
+                    <?php if (empty($availableYears)): ?>
+                        [ No Data Available ]
+                    <?php elseif (empty($filter_month)): ?>
+                        <?= htmlspecialchars($filter_year) ?> (12-Month Summary)
+                    <?php elseif (empty($filter_week)): ?>
+                        <?= htmlspecialchars($filter_month) ?> <?= htmlspecialchars($filter_year) ?> (Monthly Summary)
+                    <?php else: ?>
+                        <?= htmlspecialchars($filter_month) ?> <?= htmlspecialchars($filter_year) ?> - <?= htmlspecialchars($selected_week_label) ?> (<?= htmlspecialchars($selected_week_num) ?>)
+                    <?php endif; ?>
+                </span>
             </div>
+            
+            <button id="exportReportBtn" class="btn btn-primary shadow-sm px-4" onclick="exportFullReportToExcel()">
+                <i class="bi bi-download"></i> Export
+            </button>
         </div>
-    </div>
 
-    <script src="../bootstrap/js/bootstrap.bundle.min.js"></script>
-
-    <script>
-        const fullExportData = <?php echo json_encode($exportData); ?>;
-        const provincialData = <?php echo json_encode($reportData); ?>;
+        <div class="table-responsive bg-white shadow-sm rounded border" style="max-height: 550px; overflow-y: auto;">
+            <table class="table table-hover align-middle mb-0 text-nowrap" id="reportTable">
+                <thead class="table-light sticky-top" style="z-index: 2; top: 0;">
+                    <tr style="border-bottom: 2px solid #8B0000;">
+                        <th class="fw-bold text-secondary text-center" style="width: 50px; background-color: #f8f9fa;">#</th>
+                        <th class="fw-bold text-secondary" style="background-color: #f8f9fa;">Type</th>
+                        <th class="fw-bold text-secondary" style="background-color: #f8f9fa;">Category</th>
+                        <th class="fw-bold text-dark" style="background-color: #f8f9fa;">Brand</th>
+                        <th class="fw-bold text-dark" style="background-color: #f8f9fa;">Product Name</th>
+                        <th class="fw-bold text-secondary" style="background-color: #f8f9fa;">Specs</th>
+                        <th class="fw-bold text-center" style="color: #8B0000; background-color: #f8f9fa;">Price Range</th>
+                    </tr>
+                </thead>
+                <tbody id="reportTableBody">
+                    <tr><td colspan="7" class="text-center py-5 text-secondary"><i class="bi bi-hourglass-split spin me-2 fs-5"></i> <span class="fw-bold">Loading data...</span></td></tr>
+                </tbody>
+            </table>
+        </div>
         
-        let currentPage = 1;
-        let rowsPerPage = 50;
+        <div class="d-flex flex-column flex-sm-row justify-content-between align-items-center mt-3 px-2 gap-2">
+            <span class="text-secondary fw-bold" id="pageInfo">Loading data...</span>
+            <div class="btn-group shadow-sm">
+                <button class="btn btn-outline-secondary fw-bold" onclick="prevPage()" id="prevBtn" disabled>Previous</button>
+                <button class="btn btn-outline-secondary fw-bold" onclick="nextPage()" id="nextBtn" disabled>Next</button>
+            </div>
+        </div>
 
-        function formatIfExcelDate(val) {
-            if (val === null || val === undefined || val === '') return val;
-            let strVal = String(val).trim();
-            if (/^\d{5}$/.test(strVal)) {
-                let num = parseInt(strVal, 10);
-                if (num >= 30000 && num <= 65000) {
-                    let jsDate = new Date(Math.round((num - 25569) * 86400 * 1000));
-                    let mNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-                    return `${mNames[jsDate.getMonth()]} ${jsDate.getDate()}, ${jsDate.getFullYear()}`;
-                }
-            }
-            return val;
-        }
+    </div>
 
-        function changeRowsPerPage() {
-            rowsPerPage = parseInt(document.getElementById('rowsPerPage').value);
-            currentPage = 1;
+</div>
+
+<div class="modal fade" id="uploadProgressModal" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1" aria-hidden="true" style="z-index: 1060;">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content" style="border-radius: 12px; border-top: 5px solid #0A0A3A; border-bottom: 5px solid #0A0A3A;">
+            <div class="modal-body p-5 text-center">
+                <i class="bi bi-hourglass-split spin text-primary mb-3 d-inline-block" id="modalSpinnerIcon" style="font-size: 3.5rem;"></i>
+                <h5 class="fw-bold mb-4" style="color: #0A0A3A;" id="modalStatusText">Initializing upload...</h5>
+                <div class="alert alert-warning small p-3 mb-0 fw-bold border-warning text-start" style="background-color: #fff3cd; color: #856404; line-height: 1.5;">
+                    <i class="bi bi-exclamation-triangle-fill fs-5 me-2" style="float: left; margin-top: -2px;"></i> 
+                    Please do not close this window, click anything else, or refresh your browser until the process successfully completes.
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // =======================================================================
+    // CACHING LOGIC FOR PROVINCIAL SUMMARY (PART 3)
+    // =======================================================================
+    let fullExportData = [];
+    let provincialData = [];
+    let currentPage = 1;
+    let rowsPerPage = 50;
+    
+    const fProv = "<?= htmlspecialchars($filter_province) ?>";
+    const fYear = "<?= htmlspecialchars($filter_year) ?>";
+    const fMonth = "<?= htmlspecialchars($filter_month) ?>";
+    const fWeek = "<?= htmlspecialchars($filter_week) ?>";
+    const fType = "<?= htmlspecialchars($filter_type) ?>";
+    const currentPart = "<?= htmlspecialchars($part) ?>";
+
+    function loadProvincialData() {
+        if (currentPart != 3 || !fProv) return;
+        
+        const cacheKey = `prov_part3_${fProv}_${fYear}_${fMonth}_${fWeek}_${fType}`;
+        const cachedData = sessionStorage.getItem(cacheKey);
+
+        if (cachedData) {
+            const parsedData = JSON.parse(cachedData);
+            provincialData = parsedData.reportData;
+            fullExportData = parsedData.exportData;
             renderTable();
-        }
-
-        function formatPriceHTML(min, max) {
-            if (min === null || min === undefined) {
-                return "<span class='text-danger fw-bold' style='font-size: 0.85rem;'>NO DATA</span>";
-            }
-            let minStr = parseFloat(min).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-            let maxStr = parseFloat(max).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-            
-            if (min == max) return "₱ " + minStr;
-            return "₱ " + minStr + " - " + maxStr;
-        }
-
-        function renderTable() {
-            let tbody = document.getElementById('reportTableBody');
-            if (!tbody) return; 
-            
-            let start = (currentPage - 1) * rowsPerPage;
-            let end = start + rowsPerPage;
-            let paginatedItems = provincialData.slice(start, end);
-            
-            let html = '';
-            let count = start + 1;
-            
-            if (paginatedItems.length === 0) {
-                html = '<tr><td colspan="7" class="text-center py-5 text-secondary">No data found.</td></tr>';
-            } else {
-                paginatedItems.forEach(row => {
-                    let badgeClass = row.type_code === 'PC' ? 'bg-secondary' : 'bg-primary';
-                    let safeCat = row.category_name ? row.category_name.replace(/</g, "&lt;").replace(/>/g, "&gt;") : '';
-                    let safeBrand = row.brand_name ? row.brand_name.replace(/</g, "&lt;").replace(/>/g, "&gt;") : '';
-                    let safeName = row.product_name ? row.product_name.replace(/</g, "&lt;").replace(/>/g, "&gt;") : '';
-                    let safeSpecs = row.specifications ? row.specifications.replace(/</g, "&lt;").replace(/>/g, "&gt;") : '';
-                    let priceHtml = formatPriceHTML(row.lowest_price, row.highest_price);
-
-                    html += `<tr>
-                        <td class="text-center fw-bold text-secondary bg-light">${count++}</td>
-                        <td><span class="badge ${badgeClass}">${row.type_code}</span></td>
-                        <td class="text-secondary text-wrap" style="max-width: 150px;">${safeCat}</td>
-                        <td class="fw-bold text-wrap" style="max-width: 180px;">${safeBrand}</td>
-                        <td class="text-wrap" style="max-width: 250px;">${safeName}</td>
-                        <td class="text-secondary text-wrap" style="max-width: 250px;">${safeSpecs}</td>
-                        <td class="text-center fw-bold fs-6" style="color: #1a7a2e;">${priceHtml}</td>
-                    </tr>`;
+        } else {
+            fetch(`provincial.php?fetch_ajax_data=1&part=3&province_id=${fProv}&year=${fYear}&month=${fMonth}&week=${fWeek}&type=${fType}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.error) throw new Error(data.error);
+                    provincialData = data.reportData;
+                    fullExportData = data.exportData;
+                    
+                    try { sessionStorage.setItem(cacheKey, JSON.stringify(data)); } 
+                    catch (e) { console.warn("Data too large for browser cache."); }
+                    
+                    renderTable();
+                })
+                .catch(error => {
+                    console.error("Data Fetch Error:", error);
+                    document.getElementById('reportTableBody').innerHTML = `<tr><td colspan="7" class="text-center py-5 text-danger fw-bold">Failed to load data. ${error.message}</td></tr>`;
                 });
-            }
+        }
+    }
+
+    // Initiate Data Summary Loader
+    document.addEventListener("DOMContentLoaded", () => {
+        if (currentPart == 3) loadProvincialData();
+    });
+
+    // =======================================================================
+    // CACHING LOGIC FOR EXCEL PREVIEW (PART 2)
+    // =======================================================================
+    const pFileId = "<?= isset($_GET['file_id']) ? htmlspecialchars($_GET['file_id']) : '' ?>";
+    const pSheet = "<?= isset($_GET['sheet']) ? htmlspecialchars($_GET['sheet']) : '' ?>";
+
+    let rawPreviewData = [];
+    let previewCurrentPage = 1;
+    let previewRowsPerPage = 50;
+    
+    let hRow = -1;
+    let srpCol = -1;
+    let storeStartCol = -1;
+    let titleRows = [];
+    let headerRow = [];
+    let dataRows = [];
+
+    function loadPreviewData(targetSheet = pSheet) {
+        if (currentPart != 2 || !pFileId) return;
+
+        const cacheKey = `prov_part2_${pFileId}_${targetSheet}`;
+        const cachedData = sessionStorage.getItem(cacheKey);
+
+        if (cachedData) {
+            processPreviewData(JSON.parse(cachedData));
+        } else {
+            document.getElementById('previewTableBody').innerHTML = '<tr><td colspan="100%" class="text-center py-5 text-secondary"><i class="bi bi-hourglass-split spin me-2 fs-5"></i> <span class="fw-bold">Loading preview data...</span></td></tr>';
             
-            tbody.innerHTML = html;
-            updatePaginationInfo();
+            fetch(`provincial.php?fetch_ajax_data=1&part=2&file_id=${pFileId}&sheet=${encodeURIComponent(targetSheet)}`)
+                .then(async res => {
+                    if (!res.ok) {
+                        const text = await res.text();
+                        throw new Error(`HTTP ${res.status}: ${text.substring(0, 100)}`);
+                    }
+                    return res.json();
+                })
+                .then(data => {
+                    try { 
+                        sessionStorage.setItem(cacheKey, JSON.stringify(data)); 
+                    } catch (e) { 
+                        console.warn("Preview data too large for browser cache. Bypassing cache."); 
+                    }
+                    processPreviewData(data);
+                })
+                .catch(error => {
+                    console.error("Preview Fetch Error:", error);
+                    document.getElementById('previewAlertContainer').innerHTML = `<div class="alert alert-danger mb-0"><i class="bi bi-exclamation-triangle-fill me-2"></i> Failed to load Excel preview. Error: ${error.message}</div>`;
+                    document.getElementById('previewTableBody').innerHTML = ''; // Clear spinner
+                });
+        }
+    }
+
+    function processPreviewData(data) {
+        if (data.error) {
+            document.getElementById('previewAlertContainer').innerHTML = `<div class="alert alert-danger mb-0"><i class="bi bi-exclamation-triangle-fill me-2"></i> ${data.error}</div>`;
+            document.getElementById('previewTable').classList.add('d-none');
+            document.getElementById('previewTableBody').innerHTML = '';
+            return;
         }
 
-        function updatePaginationInfo() {
-            let total = provincialData.length;
-            let start = total === 0 ? 0 : ((currentPage - 1) * rowsPerPage) + 1;
-            let end = Math.min(currentPage * rowsPerPage, total);
-            
-            let pageInfo = document.getElementById('pageInfo');
-            if (pageInfo) pageInfo.innerText = `Showing ${start} to ${end} of ${total} entries`;
-            
-            let prevBtn = document.getElementById('prevBtn');
-            if (prevBtn) prevBtn.disabled = currentPage === 1;
-            
-            let nextBtn = document.getElementById('nextBtn');
-            if (nextBtn) nextBtn.disabled = end >= total;
+        // Build Sheet Buttons
+        if (data.sheets && data.sheets.length > 1) {
+            let sheetHtml = `<span class="fw-bold text-secondary me-3"><i class="bi bi-layers"></i> Select Sheet:</span>`;
+            data.sheets.forEach(sheet => {
+                let isCurrent = (data.current_sheet === sheet);
+                let btnClass = isCurrent ? 'btn-primary shadow-sm' : 'btn-outline-secondary';
+                // Update URL via pushState so refreshing works
+                sheetHtml += `<button onclick="window.location.href='provincial.php?part=2&file_id=${pFileId}&sheet=${encodeURIComponent(sheet)}'" class="btn btn-sm ${btnClass} fw-bold me-2 px-3">${sheet}</button>`;
+            });
+            let sContainer = document.getElementById('sheetButtonsContainer');
+            sContainer.innerHTML = sheetHtml;
+            sContainer.classList.remove('d-none');
+            sContainer.classList.add('d-flex');
         }
 
-        function prevPage() { if (currentPage > 1) { currentPage--; renderTable(); } }
-        function nextPage() { if (currentPage * rowsPerPage < provincialData.length) { currentPage++; renderTable(); } }
-
-        document.addEventListener("DOMContentLoaded", () => {
-            if (document.getElementById('reportTableBody')) {
-                renderTable();
-            }
-        });
-
-        const rawPreviewData = <?php echo json_encode($previewData['data'] ?? []); ?>;
-        let previewCurrentPage = 1;
-        let previewRowsPerPage = 50;
-        
-        let hRow = -1;
-        let srpCol = -1;
-        let storeStartCol = -1;
+        rawPreviewData = data.data || [];
+        hRow = -1; srpCol = -1; storeStartCol = -1;
 
         if (rawPreviewData.length > 0) {
             for(let i=0; i < Math.min(30, rawPreviewData.length); i++) {
@@ -708,816 +576,791 @@
             storeStartCol = maxCol !== -1 ? maxCol + 1 : 6;
         }
 
-        const titleRows = hRow > 0 ? rawPreviewData.slice(0, hRow) : [];
-        const headerRow = rawPreviewData.length > 0 ? rawPreviewData[hRow] : [];
-        const dataRows = rawPreviewData.length > 0 ? rawPreviewData.slice(hRow + 1) : [];
+        titleRows = hRow > 0 ? rawPreviewData.slice(0, hRow) : [];
+        headerRow = rawPreviewData.length > 0 ? rawPreviewData[hRow] : [];
+        dataRows = rawPreviewData.length > 0 ? rawPreviewData.slice(hRow + 1) : [];
 
-        function renderPreviewTable() {
-            let thead = document.getElementById('previewTableHead');
-            let tbody = document.getElementById('previewTableBody');
-            if (!thead || !tbody) return;
+        previewCurrentPage = 1;
+        document.getElementById('previewPaginationContainer').classList.remove('d-none');
+        document.getElementById('previewPaginationContainer').classList.add('d-flex');
+        renderPreviewTable();
+    }
 
-            let headHtml = '';
-            
-            if (titleRows.length > 0) {
-                titleRows.forEach((r, idx) => {
-                    headHtml += '<tr style="background-color: #343a40;">';
-                    headHtml += `<th class="text-center text-secondary border-secondary" style="width: 40px; background-color: #212529;">${idx + 1}</th>`;
-                    for (let c = 0; c < headerRow.length; c++) {
-                        let cellVal = r[c] !== undefined && r[c] !== null ? r[c] : '';
-                        cellVal = formatIfExcelDate(cellVal); 
-                        headHtml += `<th class="fw-normal text-light border-secondary" style="white-space: nowrap;">${cellVal}</th>`;
-                    }
-                    headHtml += '</tr>';
-                });
+
+    // Initiate Loaders immediately
+    document.addEventListener("DOMContentLoaded", () => {
+        if (currentPart == 2) loadPreviewData();
+    });
+
+    // --------------------------------------------------------------------------------------
+    // Standard File Logic
+    // --------------------------------------------------------------------------------------
+    let uploadStartTime = null;
+
+    function formatIfExcelDate(val) {
+        if (val === null || val === undefined || val === '') return val;
+        let strVal = String(val).trim();
+        if (/^\d{5}$/.test(strVal)) {
+            let num = parseInt(strVal, 10);
+            if (num >= 30000 && num <= 65000) {
+                let jsDate = new Date(Math.round((num - 25569) * 86400 * 1000));
+                let mNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+                return `${mNames[jsDate.getMonth()]} ${jsDate.getDate()}, ${jsDate.getFullYear()}`;
             }
+        }
+        return val;
+    }
 
-            headHtml += '<tr style="background-color: #212529;">';
-            headHtml += `<th class="text-center text-secondary border-secondary" style="width: 40px;">${hRow + 1}</th>`;
-            if (headerRow) {
+    function changeRowsPerPage() {
+        rowsPerPage = parseInt(document.getElementById('rowsPerPage').value);
+        currentPage = 1;
+        renderTable();
+    }
+
+    function formatPriceHTML(min, max) {
+        if (min === null || min === undefined) return "<span class='text-danger fw-bold' style='font-size: 0.85rem;'>NO DATA</span>";
+        let minStr = parseFloat(min).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        let maxStr = parseFloat(max).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        if (min == max) return "₱ " + minStr;
+        return "₱ " + minStr + " - " + maxStr;
+    }
+
+    function renderTable() {
+        let tbody = document.getElementById('reportTableBody');
+        if (!tbody) return; 
+        
+        let start = (currentPage - 1) * rowsPerPage;
+        let end = start + rowsPerPage;
+        let paginatedItems = provincialData.slice(start, end);
+        
+        let html = '';
+        let count = start + 1;
+        
+        if (paginatedItems.length === 0) {
+            html = '<tr><td colspan="7" class="text-center py-5 text-secondary">No data found.</td></tr>';
+        } else {
+            paginatedItems.forEach(row => {
+                let badgeClass = row.type_code === 'PC' ? 'bg-secondary' : 'bg-primary';
+                let safeCat = row.category_name ? row.category_name.replace(/</g, "&lt;").replace(/>/g, "&gt;") : '';
+                let safeBrand = row.brand_name ? row.brand_name.replace(/</g, "&lt;").replace(/>/g, "&gt;") : '';
+                let safeName = row.product_name ? row.product_name.replace(/</g, "&lt;").replace(/>/g, "&gt;") : '';
+                let safeSpecs = row.specifications ? row.specifications.replace(/</g, "&lt;").replace(/>/g, "&gt;") : '';
+                let priceHtml = formatPriceHTML(row.lowest_price, row.highest_price);
+
+                html += `<tr>
+                    <td class="text-center fw-bold text-secondary bg-light">${count++}</td>
+                    <td><span class="badge ${badgeClass}">${row.type_code}</span></td>
+                    <td class="text-secondary text-wrap" style="max-width: 150px;">${safeCat}</td>
+                    <td class="fw-bold text-wrap" style="max-width: 180px;">${safeBrand}</td>
+                    <td class="text-wrap" style="max-width: 250px;">${safeName}</td>
+                    <td class="text-secondary text-wrap" style="max-width: 250px;">${safeSpecs}</td>
+                    <td class="text-center fw-bold fs-6" style="color: #1a7a2e;">${priceHtml}</td>
+                </tr>`;
+            });
+        }
+        tbody.innerHTML = html;
+        updatePaginationInfo();
+    }
+
+    function updatePaginationInfo() {
+        let total = provincialData.length;
+        let start = total === 0 ? 0 : ((currentPage - 1) * rowsPerPage) + 1;
+        let end = Math.min(currentPage * rowsPerPage, total);
+        
+        let pageInfo = document.getElementById('pageInfo');
+        if (pageInfo) pageInfo.innerText = `Showing ${start} to ${end} of ${total} entries`;
+        
+        let prevBtn = document.getElementById('prevBtn');
+        if (prevBtn) prevBtn.disabled = currentPage === 1;
+        
+        let nextBtn = document.getElementById('nextBtn');
+        if (nextBtn) nextBtn.disabled = end >= total;
+    }
+
+    function prevPage() { if (currentPage > 1) { currentPage--; renderTable(); } }
+    function nextPage() { if (currentPage * rowsPerPage < provincialData.length) { currentPage++; renderTable(); } }
+
+    function renderPreviewTable() {
+        let thead = document.getElementById('previewTableHead');
+        let tbody = document.getElementById('previewTableBody');
+        if (!thead || !tbody) return;
+
+        let headHtml = '';
+        
+        if (titleRows.length > 0) {
+            titleRows.forEach((r, idx) => {
+                headHtml += '<tr style="background-color: #343a40;">';
+                headHtml += `<th class="text-center text-secondary border-secondary" style="width: 40px; background-color: #212529;">${idx + 1}</th>`;
                 for (let c = 0; c < headerRow.length; c++) {
-                    let cell = headerRow[c];
-                    cell = formatIfExcelDate(cell); 
-                    headHtml += `<th class="border-secondary text-white" style="white-space: nowrap;">${cell !== null && cell !== undefined ? cell : ''}</th>`;
+                    let cellVal = r[c] !== undefined && r[c] !== null ? r[c] : '';
+                    cellVal = formatIfExcelDate(cellVal); 
+                    headHtml += `<th class="fw-normal text-light border-secondary" style="white-space: nowrap;">${cellVal}</th>`;
                 }
+                headHtml += '</tr>';
+            });
+        }
+
+        headHtml += '<tr style="background-color: #212529;">';
+        headHtml += `<th class="text-center text-secondary border-secondary" style="width: 40px;">${hRow + 1}</th>`;
+        if (headerRow) {
+            for (let c = 0; c < headerRow.length; c++) {
+                let cell = headerRow[c];
+                cell = formatIfExcelDate(cell); 
+                headHtml += `<th class="border-secondary text-white" style="white-space: nowrap;">${cell !== null && cell !== undefined ? cell : ''}</th>`;
             }
-            headHtml += '</tr>';
-            
-            thead.innerHTML = headHtml;
+        }
+        headHtml += '</tr>';
+        
+        thead.innerHTML = headHtml;
 
-            let start = (previewCurrentPage - 1) * previewRowsPerPage;
-            let end = start + previewRowsPerPage;
-            let paginatedItems = dataRows.slice(start, end);
+        let start = (previewCurrentPage - 1) * previewRowsPerPage;
+        let end = start + previewRowsPerPage;
+        let paginatedItems = dataRows.slice(start, end);
 
-            let html = '';
-            let baseRowOffset = hRow + 2; 
-            let count = start + baseRowOffset;
+        let html = '';
+        let baseRowOffset = hRow + 2; 
+        let count = start + baseRowOffset;
 
-            if (paginatedItems.length === 0) {
-                html = `<tr><td colspan="${(headerRow.length || 5) + 1}" class="text-center py-5 text-secondary">No readable data found in this sheet.</td></tr>`;
-            } else {
-                paginatedItems.forEach(row => {
-                    html += `<tr><td class="text-center fw-bold bg-light text-secondary">${count++}</td>`;
+        if (paginatedItems.length === 0) {
+            html = `<tr><td colspan="${(headerRow.length || 5) + 1}" class="text-center py-5 text-secondary">No readable data found in this sheet.</td></tr>`;
+        } else {
+            paginatedItems.forEach(row => {
+                html += `<tr><td class="text-center fw-bold bg-light text-secondary">${count++}</td>`;
+                
+                let srpRaw = srpCol !== -1 && row[srpCol] !== null && row[srpCol] !== undefined ? parseFloat(String(row[srpCol]).replace(/[^0-9.]/g, '')) : null;
+
+                for (let c = 0; c < headerRow.length; c++) { 
+                    let cellVal = row[c] !== undefined && row[c] !== null ? row[c] : '';
+                    let cellStr = String(cellVal).trim();
+                    let textColorClass = "";
                     
-                    let srpRaw = srpCol !== -1 && row[srpCol] !== null && row[srpCol] !== undefined ? parseFloat(String(row[srpCol]).replace(/[^0-9.]/g, '')) : null;
-
-                    for (let c = 0; c < headerRow.length; c++) { 
-                        let cellVal = row[c] !== undefined && row[c] !== null ? row[c] : '';
-                        let cellStr = String(cellVal).trim();
-                        
-                        let textColorClass = "";
-                        
-                        let colHeadStr = "";
-                        if (hRow >= 0 && rawPreviewData[hRow] && rawPreviewData[hRow][c]) colHeadStr = String(rawPreviewData[hRow][c]).trim().toUpperCase();
-                        if (!colHeadStr && hRow - 1 >= 0 && rawPreviewData[hRow - 1] && rawPreviewData[hRow - 1][c]) colHeadStr = String(rawPreviewData[hRow - 1][c]).trim().toUpperCase();
-                        if (!colHeadStr && hRow - 2 >= 0 && rawPreviewData[hRow - 2] && rawPreviewData[hRow - 2][c]) colHeadStr = String(rawPreviewData[hRow - 2][c]).trim().toUpperCase();
-                        
-                        let isExcludedCol = false;
-                        if (colHeadStr) {
-                            isExcludedCol = ['MIN', 'MAX', 'MODE', 'AVERAGE', 'NAN'].some(kw => colHeadStr.includes(kw));
-                        }
-                        
-                        let isStoreCol = (c >= storeStartCol) && !isExcludedCol;
-                        
-                        if (isStoreCol && srpRaw !== null && !isNaN(srpRaw) && cellStr !== "") {
-                            let priceRaw = parseFloat(cellStr.replace(/[^0-9.]/g, ''));
-                            if (!isNaN(priceRaw) && priceRaw > 0) {
-                                if (priceRaw > srpRaw) {
-                                    textColorClass = "text-danger fw-bold"; 
-                                } else {
-                                    textColorClass = "text-success fw-bold"; 
-                                }
+                    let colHeadStr = "";
+                    if (hRow >= 0 && rawPreviewData[hRow] && rawPreviewData[hRow][c]) colHeadStr = String(rawPreviewData[hRow][c]).trim().toUpperCase();
+                    if (!colHeadStr && hRow - 1 >= 0 && rawPreviewData[hRow - 1] && rawPreviewData[hRow - 1][c]) colHeadStr = String(rawPreviewData[hRow - 1][c]).trim().toUpperCase();
+                    if (!colHeadStr && hRow - 2 >= 0 && rawPreviewData[hRow - 2] && rawPreviewData[hRow - 2][c]) colHeadStr = String(rawPreviewData[hRow - 2][c]).trim().toUpperCase();
+                    
+                    let isExcludedCol = false;
+                    if (colHeadStr) {
+                        isExcludedCol = ['MIN', 'MAX', 'MODE', 'AVERAGE', 'NAN', 'FREEZE'].some(kw => colHeadStr.includes(kw));
+                    }
+                    
+                    let isStoreCol = (c >= storeStartCol) && !isExcludedCol;
+                    
+                    if (isStoreCol && srpRaw !== null && !isNaN(srpRaw) && cellStr !== "") {
+                        let priceRaw = parseFloat(cellStr.replace(/[^0-9.]/g, ''));
+                        if (!isNaN(priceRaw) && priceRaw > 0) {
+                            if (priceRaw > srpRaw) {
+                                textColorClass = "text-danger fw-bold"; 
+                            } else {
+                                textColorClass = "text-success fw-bold"; 
                             }
                         }
-
-                        if (textColorClass) {
-                            html += `<td class="${textColorClass}">${cellVal}</td>`;
-                        } else {
-                            html += `<td>${cellVal}</td>`;
-                        }
                     }
-                    html += '</tr>';
-                });
-            }
 
-            tbody.innerHTML = html;
-            updatePreviewPaginationInfo();
+                    if (textColorClass) {
+                        html += `<td class="${textColorClass}">${cellVal}</td>`;
+                    } else {
+                        html += `<td>${cellVal}</td>`;
+                    }
+                }
+                html += '</tr>';
+            });
         }
 
-        function updatePreviewPaginationInfo() {
-            let total = dataRows.length;
-            let start = total === 0 ? 0 : ((previewCurrentPage - 1) * previewRowsPerPage) + 1;
-            let end = Math.min(previewCurrentPage * previewRowsPerPage, total);
-            
-            let pageInfo = document.getElementById('previewPageInfo');
-            if (pageInfo) pageInfo.innerText = `Showing ${start} to ${end} of ${total} entries`;
-            
-            let prevBtn = document.getElementById('previewPrevBtn');
-            if (prevBtn) prevBtn.disabled = previewCurrentPage === 1;
-            
-            let nextBtn = document.getElementById('previewNextBtn');
-            if (nextBtn) nextBtn.disabled = end >= total;
-        }
+        tbody.innerHTML = html;
+        updatePreviewPaginationInfo();
+    }
 
-        function previewPrevPage() { if (previewCurrentPage > 1) { previewCurrentPage--; renderPreviewTable(); } }
-        function previewNextPage() { if (previewCurrentPage * previewRowsPerPage < dataRows.length) { previewCurrentPage++; renderPreviewTable(); } }
-        function changePreviewRowsPerPage() {
-            previewRowsPerPage = parseInt(document.getElementById('previewRowsPerPage').value);
-            previewCurrentPage = 1;
-            renderPreviewTable();
-        }
+    function updatePreviewPaginationInfo() {
+        let total = dataRows.length;
+        let start = total === 0 ? 0 : ((previewCurrentPage - 1) * previewRowsPerPage) + 1;
+        let end = Math.min(previewCurrentPage * previewRowsPerPage, total);
+        
+        let pageInfo = document.getElementById('previewPageInfo');
+        if (pageInfo) pageInfo.innerText = `Showing ${start} to ${end} of ${total} entries`;
+        
+        let prevBtn = document.getElementById('previewPrevBtn');
+        if (prevBtn) prevBtn.disabled = previewCurrentPage === 1;
+        
+        let nextBtn = document.getElementById('previewNextBtn');
+        if (nextBtn) nextBtn.disabled = end >= total;
+    }
 
-        document.addEventListener("DOMContentLoaded", () => {
-            if (document.getElementById('previewTableBody')) {
-                renderPreviewTable();
+    function previewPrevPage() { if (previewCurrentPage > 1) { previewCurrentPage--; renderPreviewTable(); } }
+    function previewNextPage() { if (previewCurrentPage * previewRowsPerPage < dataRows.length) { previewCurrentPage++; renderPreviewTable(); } }
+    function changePreviewRowsPerPage() {
+        previewRowsPerPage = parseInt(document.getElementById('previewRowsPerPage').value);
+        previewCurrentPage = 1;
+        renderPreviewTable();
+    }
+
+    function filterUploadedFiles() {
+        let search = document.getElementById("searchFile").value.toLowerCase();
+        let prov = document.getElementById("filterProv").value;
+        let dateVal = document.getElementById("filterDate").value;
+
+        let rows = document.querySelectorAll(".upload-row");
+        rows.forEach(row => {
+            let fileName = row.querySelector(".file-name-cell").innerText.toLowerCase();
+            let rowProv = row.getAttribute("data-province");
+            let rowDate = row.getAttribute("data-date");
+
+            let matchSearch = fileName.includes(search);
+            let matchProv = (prov === "All" || rowProv === prov);
+            let matchDate = (dateVal === "" || rowDate === dateVal);
+
+            if (matchSearch && matchProv && matchDate) {
+                row.style.display = "";
+            } else {
+                row.style.display = "none";
             }
         });
+    }
 
+    function clearArchiveFilters() {
+        document.getElementById('searchFile').value = '';
+        document.getElementById('filterProv').value = 'All';
+        document.getElementById('filterDate').value = '';
+        filterUploadedFiles();
+    }
 
-        function filterUploadedFiles() {
-            let search = document.getElementById("searchFile").value.toLowerCase();
-            let prov = document.getElementById("filterProv").value;
-            let dateVal = document.getElementById("filterDate").value;
-
-            let rows = document.querySelectorAll(".upload-row");
-            rows.forEach(row => {
-                let fileName = row.querySelector(".file-name-cell").innerText.toLowerCase();
-                let rowProv = row.getAttribute("data-province");
-                let rowDate = row.getAttribute("data-date");
-
-                let matchSearch = fileName.includes(search);
-                let matchProv = (prov === "All" || rowProv === prov);
-                let matchDate = (dateVal === "" || rowDate === dateVal);
-
-                if (matchSearch && matchProv && matchDate) {
-                    row.style.display = "";
-                } else {
-                    row.style.display = "none";
-                }
-            });
+    function updateFilter(element) {
+        let form = element.form;
+        if (element.name === 'year') {
+            form.month.value = '';
+            form.week.value = '';
+        } else if (element.name === 'month') {
+            form.week.value = '';
         }
+        form.submit();
+    }
 
-        function clearArchiveFilters() {
-            document.getElementById('searchFile').value = '';
-            document.getElementById('filterProv').value = 'All';
-            document.getElementById('filterDate').value = '';
-            filterUploadedFiles();
-        }
-
-        function updateFilter(element) {
-            let form = element.form;
-            if (element.name === 'year') {
-                form.month.value = '';
-                form.week.value = '';
-            } else if (element.name === 'month') {
-                form.week.value = '';
-            }
-            form.submit();
-        }
-
-        // ==================================================
-        // GLOBAL MODALS & ACTIONS LOGIC
-        // ==================================================
-        function showConfirmModal(title, message, colorClass, btnText, callback) {
-            document.getElementById('confirmModalTitle').innerText = title;
-            document.getElementById('confirmModalTitle').className = 'modal-title fw-bold text-' + colorClass;
-            document.querySelector('#universalConfirmModal .modal-content').style.borderTop = '5px solid var(--bs-' + colorClass + ')';
-            document.getElementById('confirmModalMessage').innerHTML = message;
-            
-            let btn = document.getElementById('confirmModalBtn');
-            btn.className = 'btn btn-' + colorClass + ' fw-bold px-4 shadow-sm';
-            btn.innerHTML = btnText;
-            
-            let newBtn = btn.cloneNode(true);
-            btn.parentNode.replaceChild(newBtn, btn);
-            
-            let modal = new bootstrap.Modal(document.getElementById('universalConfirmModal'));
-            
-            newBtn.addEventListener('click', function() {
-                modal.hide();
-                callback();
-            });
-            modal.show();
-        }
-
-        function confirmLinkAction(e, url, title, message, colorClass, btnText) {
-            e.preventDefault();
-            showConfirmModal(title, message, colorClass, btnText, function() {
-                window.location.href = url;
-            });
-        }
-
-        function confirmLogout(e) {
-            e.preventDefault();
-            showConfirmModal('Secure Logout', 'Are you sure you want to log out of the system?', 'danger', '<i class="bi bi-box-arrow-right"></i> Logout', function() {
-                window.location.href = '../admin/logout.php';
-            });
-        }
-
-        function openBackupModal() {
-            document.getElementById('backupAuthPassword').value = '';
-            document.getElementById('backupAuthError').classList.add('d-none');
-            new bootstrap.Modal(document.getElementById('backupAuthModal')).show();
-        }
-
-        document.getElementById('confirmBackupBtn')?.addEventListener('click', async function() {
-            let pass = document.getElementById('backupAuthPassword').value;
-            if(!pass) return;
-            
-            let btn = this;
-            let origText = btn.innerHTML;
-            btn.innerHTML = '<i class="bi bi-hourglass-split spin"></i> Verifying...';
+    async function buildAndNavigateReport(prov_id, year, btn) {
+        showConfirmModal('Generate Report', 'Are you sure you want to generate a new report for this data?', 'success', '<i class="bi  bi-journal-check"></i> Generate', async function() {
+            let origHTML = btn.innerHTML;
+            btn.innerHTML = '<i class="bi bi-hourglass-split spin"></i> Generating...';
             btn.disabled = true;
-
+            
             let fd = new FormData();
-            fd.append('action', 'verify_password_only');
-            fd.append('password', pass);
-
+            fd.append('action', 'build_and_save_report');
+            fd.append('province_id', prov_id);
+            fd.append('year', year);
+            
             try {
                 let res = await fetch('ajax_handler.php', { method: 'POST', body: fd });
                 let data = await res.json();
                 if(data.status === 'success') {
-                    bootstrap.Modal.getInstance(document.getElementById('backupAuthModal')).hide();
-                    showConfirmModal('Download Backup', 'Authentication successful. Are you sure you want to generate and download the database backup now?', 'success', '<i class="bi bi-download"></i> Download', function() {
-                        let a = document.createElement('a');
-                        a.href = 'ajax_handler.php?action=download_backup';
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
+                    // CRITICAL FIX: The database changed, so we must delete the old memory cache!
+                    sessionStorage.removeItem('products_masterlist_cache');
+                    sessionStorage.removeItem('movement_log_cache');
+                    Object.keys(sessionStorage).forEach(key => {
+                        if (key.startsWith('prov_part') || key.startsWith('regional_cache_') || key.startsWith('comp_cache_')) {
+                            sessionStorage.removeItem(key);
+                        }
                     });
-                } else {
-                    document.getElementById('backupAuthError').classList.remove('d-none');
-                }
-            } catch(err) {
-                alert("Connection error.");
-            }
-            btn.innerHTML = origText;
-            btn.disabled = false;
-        });
 
-        async function buildAndNavigateReport(prov_id, year, btn) {
-            showConfirmModal('Generate Report', 'Are you sure you want to generate a new report for this data?', 'success', '<i class="bi  bi-journal-check"></i> Generate', async function() {
-                let origHTML = btn.innerHTML;
-                btn.innerHTML = '<i class="bi bi-hourglass-split spin"></i> Generating...';
-                btn.disabled = true;
-                
-                let fd = new FormData();
-                fd.append('action', 'build_and_save_report');
-                fd.append('province_id', prov_id);
-                fd.append('year', year);
-                
-                try {
-                    let res = await fetch('ajax_handler.php', { method: 'POST', body: fd });
-                    let data = await res.json();
-                    if(data.status === 'success') {
-                        window.location.href = `provincial.php?part=3&province_id=${prov_id}&year=${year}`;
-                    } else {
-                        alert("Error saving report: " + data.message);
-                        btn.innerHTML = origHTML;
-                        btn.disabled = false;
-                    }
-                } catch(e) {
-                    alert("Connection failed.");
-                    console.error(e);
+                    window.location.href = `provincial.php?part=3&province_id=${prov_id}&year=${year}`;
+                } else {
+                    alert("Error saving report: " + data.message);
                     btn.innerHTML = origHTML;
                     btn.disabled = false;
                 }
-            });
-        }
-
-        function exportFullReportToExcel() {
-            if(!fullExportData || fullExportData.length === 0) {
-                alert("There is no data to export for this filter selection!");
-                return;
+            } catch(e) {
+                alert("Connection failed.");
+                console.error(e);
+                btn.innerHTML = origHTML;
+                btn.disabled = false;
             }
-            showConfirmModal('Export to Excel', 'Are you sure you want to generate and download this report?', 'primary', '<i class="bi bi-download"></i> Export', function() {
-                const btn = document.getElementById('exportReportBtn');
-                const originalHTML = btn.innerHTML;
-                btn.innerHTML = '<i class="bi bi-hourglass-split spin"></i> Exporting...';
-                btn.disabled = true;
+        });
+    }
 
-                setTimeout(() => {
-                    try {
-                        let wb = XLSX.utils.book_new();
+    function exportFullReportToExcel() {
+        if(!fullExportData || fullExportData.length === 0) {
+            alert("There is no data to export for this filter selection!");
+            return;
+        }
+        showConfirmModal('Export to Excel', 'Are you sure you want to generate and download this report?', 'primary', '<i class="bi bi-file-earmark-excel"></i> Export', function() {
+            const btn = document.getElementById('exportReportBtn');
+            const originalHTML = btn.innerHTML;
+            btn.innerHTML = '<i class="bi bi-hourglass-split spin"></i> Exporting...';
+            btn.disabled = true;
 
-                        let bnRows = [];
-                        let pcRows = [];
-                        let headers = ["#", "Type", "Category", "Brand", "Product Name", "Specs", "Price Range"];
-                        
-                        bnRows.push(headers);
-                        pcRows.push(headers);
+            setTimeout(() => {
+                try {
+                    let wb = XLSX.utils.book_new();
 
-                        let bnCounter = 1;
-                        let pcCounter = 1;
+                    let bnRows = [];
+                    let pcRows = [];
+                    let headers = ["#", "Type", "Category", "Brand", "Product Name", "Specs", "Price Range"];
+                    
+                    bnRows.push(headers);
+                    pcRows.push(headers);
 
-                        fullExportData.forEach(row => {
-                            let priceStr = "NO DATA";
-                            if (row.lowest_price !== null) {
-                                if (row.lowest_price == row.highest_price) {
-                                    priceStr = "₱ " + parseFloat(row.lowest_price).toFixed(2);
-                                } else {
-                                    priceStr = "₱ " + parseFloat(row.lowest_price).toFixed(2) + " - " + parseFloat(row.highest_price).toFixed(2);
-                                }
-                            }
+                    let bnCounter = 1;
+                    let pcCounter = 1;
 
-                            let r = ["", row.type_code, row.category_name, row.brand_name, row.product_name, row.specifications, priceStr];
-
-                            if(row.type_code === 'BN') {
-                                r[0] = bnCounter++;
-                                bnRows.push(r);
+                    fullExportData.forEach(row => {
+                        let priceStr = "NO DATA";
+                        if (row.lowest_price !== null) {
+                            if (row.lowest_price == row.highest_price) {
+                                priceStr = "₱ " + parseFloat(row.lowest_price).toFixed(2);
                             } else {
-                                r[0] = pcCounter++;
-                                pcRows.push(r);
+                                priceStr = "₱ " + parseFloat(row.lowest_price).toFixed(2) + " - " + parseFloat(row.highest_price).toFixed(2);
                             }
-                        });
-
-                        if(bnRows.length > 1) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(bnRows), "Basic Necessities");
-                        if(pcRows.length > 1) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(pcRows), "Prime Commodities");
-                        
-                        if (bnRows.length === 1 && pcRows.length === 1) {
-                            alert("No data available to export.");
-                            return;
                         }
 
-                        let filename = `<?= $safe_prov_name ?>_Full_Report_<?= $filter_year ?>.xlsx`;
-                        XLSX.writeFile(wb, filename);
+                        let r = ["", row.type_code, row.category_name, row.brand_name, row.product_name, row.specifications, priceStr];
 
-                    } catch(e) {
-                        alert("Export failed: " + e.message);
-                    } finally {
-                        btn.innerHTML = originalHTML;
-                        btn.disabled = false;
-                    }
-                }, 300);
-            });
-        }
+                        if(row.type_code === 'BN') {
+                            r[0] = bnCounter++;
+                            bnRows.push(r);
+                        } else {
+                            r[0] = pcCounter++;
+                            pcRows.push(r);
+                        }
+                    });
 
-        // =====================================================================
-        // NEW FILE UPLOAD HANDLER: JS EXTRACTS SRP DATE & SENDS CHUNKS (FAST)
-        // =====================================================================
-        document.getElementById('fileInput')?.addEventListener('change', function(e) {
-            let file = e.target.files[0];
-            if(!file) return;
-
-            // Timer Logic
-            let startTime = Date.now();
-            let timerElement = document.getElementById('uploadTimer');
-            let timerInterval = setInterval(() => {
-                let seconds = Math.floor((Date.now() - startTime) / 1000);
-                let mins = Math.floor(seconds / 60);
-                let secs = seconds % 60;
-                timerElement.innerText = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-            }, 1000);
-
-            document.getElementById('uploadStatus').classList.remove('d-none');
-            const statusText = document.getElementById('statusText');
-
-            statusText.innerText = "Step 1: Uploading file...";
-            let formData = new FormData(document.getElementById('uploadForm'));
-            formData.append('action', 'upload_file_only');
-            
-            let yearMatch = file.name.match(/(20\d{2})/);
-            if(yearMatch) formData.set('target_year', yearMatch[1]);
-            
-            fetch('ajax_handler.php', { method: 'POST', body: formData })
-            .then(res => res.json())
-            .then(uploadData => {
-                if(uploadData.status !== 'success') {
-                    clearInterval(timerInterval);
-                    alert("Upload Error: " + (uploadData.message || "Unknown server error."));
-                    location.reload(); return;
-                }
-
-                statusText.innerText = "Step 2: Extracting 100% of Master List... (Please wait a few seconds)";
-                
-                setTimeout(() => {
-                    const reader = new FileReader();
+                    if(bnRows.length > 1) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(bnRows), "Basic Necessities");
+                    if(pcRows.length > 1) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(pcRows), "Prime Commodities");
                     
-                    reader.onload = async function(e) {
-                        const data = new Uint8Array(e.target.result);
-                        const workbook = XLSX.read(data, {type: 'array'});
-                        let allFlatData = [];
-                        let extractedSrpDate = null; 
+                    if (bnRows.length === 1 && pcRows.length === 1) {
+                        alert("No data available to export.");
+                        return;
+                    }
 
-                        workbook.SheetNames.forEach(sheetName => {
-                            let sn = sheetName.toLowerCase();
-                            if(sn.includes('instruction') || sn.includes('summary')) return;
-                            
-                            const sheet = workbook.Sheets[sheetName];
-                            const jData = XLSX.utils.sheet_to_json(sheet, {
-                                header: 1, 
-                                defval: "", 
-                                blankrows: false, 
-                                raw: false, 
-                                dateNF: 'mmmm d, yyyy'
-                            }); 
+                    let filename = `<?= $safe_prov_name ?>_Full_Report_<?= $filter_year ?>.xlsx`;
+                    XLSX.writeFile(wb, filename);
 
-                            let hRow = -1; 
-                            for(let i=0; i < Math.min(30, jData.length); i++) {
-                                if (!jData[i]) continue;
-                                let str = jData[i].join(" ").toUpperCase();
-                                if(str.includes("COMMODITY") || str.includes("BRAND") || str.includes("SPECIFICATION")) {
-                                    hRow = i; 
-                                    
-                                    // --- NEW, BULLETPROOF REGEX DATE EXTRACTION ---
-                                    if (!extractedSrpDate) { 
-                                        for(let c=0; c < jData[i].length; c++) {
-                                            let val = String(jData[i][c] || "").trim();
-                                            if(val.toUpperCase().includes("SRP")) {
-                                                // Hunts for patterns like "01 FEB 2025" or "FEB 01, 2025" anywhere in the cell
-                                                let dateMatch = val.match(/(\d{1,2}\s+[a-zA-Z]{3,}\s+\d{4}|[a-zA-Z]{3,}\s+\d{1,2},?\s+\d{4})/);
-                                                if (dateMatch) {
-                                                    let d = new Date(dateMatch[0]);
-                                                    if (!isNaN(d)) {
-                                                        extractedSrpDate = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-                                                        break; 
-                                                    }
+                } catch(e) {
+                    alert("Export failed: " + e.message);
+                } finally {
+                    btn.innerHTML = originalHTML;
+                    btn.disabled = false;
+                }
+            }, 300);
+        });
+    }
+
+    document.getElementById('fileInput')?.addEventListener('change', function(e) {
+        let file = e.target.files[0];
+        if(!file) return;
+
+        uploadStartTime = Date.now(); // Start silent background timer
+
+        // Trigger the screen-locking modal
+        const progressModal = new bootstrap.Modal(document.getElementById('uploadProgressModal'));
+        progressModal.show();
+        
+        const statusText = document.getElementById('modalStatusText');
+        const spinnerIcon = document.getElementById('modalSpinnerIcon');
+
+        statusText.innerText = "Step 1: Uploading file...";
+        let formData = new FormData(document.getElementById('uploadForm'));
+        formData.append('action', 'upload_file_only');
+        
+        let yearMatch = file.name.match(/(20\d{2})/);
+        if(yearMatch) formData.set('target_year', yearMatch[1]);
+        
+        fetch('ajax_handler.php', { method: 'POST', body: formData })
+        .then(res => res.json())
+        .then(uploadData => {
+            if(uploadData.status !== 'success') {
+                spinnerIcon.classList.replace('bi-hourglass-split', 'bi-exclamation-triangle-fill');
+                spinnerIcon.classList.replace('text-primary', 'text-danger');
+                statusText.innerText = "Upload Error: " + (uploadData.message || "Unknown server error.");
+                setTimeout(() => { location.reload(); }, 3000);
+                return;
+            }
+
+            statusText.innerText = "Step 2: Extracting 100% of Master List... (Please wait)";
+            
+            setTimeout(() => {
+                const reader = new FileReader();
+                
+                reader.onload = async function(e) {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, {type: 'array'});
+                    let allFlatData = [];
+                    let extractedSrpDate = null; 
+
+                    workbook.SheetNames.forEach(sheetName => {
+                        let sn = sheetName.toLowerCase();
+                        if(sn.includes('instruction') || sn.includes('summary')) return;
+                        
+                        const sheet = workbook.Sheets[sheetName];
+                        const jData = XLSX.utils.sheet_to_json(sheet, {
+                            header: 1, 
+                            defval: "", 
+                            blankrows: false, 
+                            raw: false, 
+                            dateNF: 'mmmm d, yyyy'
+                        }); 
+
+                        let hRow = -1; 
+                        for(let i=0; i < Math.min(30, jData.length); i++) {
+                            if (!jData[i]) continue;
+                            let str = jData[i].join(" ").toUpperCase();
+                            if(str.includes("COMMODITY") || str.includes("BRAND") || str.includes("SPECIFICATION")) {
+                                hRow = i; 
+                                
+                                if (!extractedSrpDate) { 
+                                    for(let c=0; c < jData[i].length; c++) {
+                                        let val = String(jData[i][c] || "").trim();
+                                        if(val.toUpperCase().includes("SRP")) {
+                                            let dateMatch = val.match(/(\d{1,2}\s+[a-zA-Z]{3,}\s+\d{4}|[a-zA-Z]{3,}\s+\d{1,2},?\s+\d{4})/);
+                                            if (dateMatch) {
+                                                let d = new Date(dateMatch[0]);
+                                                if (!isNaN(d)) {
+                                                    extractedSrpDate = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+                                                    break; 
                                                 }
                                             }
                                         }
                                     }
-                                    // ----------------------------------------------
-                                    break; 
+                                }
+                                break; 
+                            }
+                        }
+                        if(hRow === -1) return; 
+
+                        function normalizeMonth(m) {
+                            if(!m) return "Unknown";
+                            m = m.toLowerCase();
+                            if(m.startsWith('jan')) return "January";
+                            if(m.startsWith('feb')) return "February";
+                            if(m.startsWith('mar')) return "March";
+                            if(m.startsWith('apr')) return "April";
+                            if(m.startsWith('may')) return "May";
+                            if(m.startsWith('jun')) return "June";
+                            if(m.startsWith('jul')) return "July";
+                            if(m.startsWith('aug')) return "August";
+                            if(m.startsWith('sep')) return "September";
+                            if(m.startsWith('oct')) return "October";
+                            if(m.startsWith('nov')) return "November";
+                            if(m.startsWith('dec')) return "December";
+                            return "Unknown";
+                        }
+
+                        let globalYear = parseInt(uploadData.target_year) || new Date().getFullYear();
+                        let globalMonth = "Unknown";
+                        let globalWeek = 1;
+
+                        let fileMonthMatch = file.name.match(/\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\b/i);
+                        if (fileMonthMatch) globalMonth = normalizeMonth(fileMonthMatch[1]);
+
+                        let sheetMonthMatch = sheetName.match(/\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\b/i);
+                        if (sheetMonthMatch) globalMonth = normalizeMonth(sheetMonthMatch[1]);
+
+                        for(let sR = 0; sR <= hRow; sR++) {
+                            for(let scanC = 0; scanC < jData[sR].length; scanC++) {
+                                let cellTxt = (jData[sR][scanC] || "").toString().trim();
+                                if(!cellTxt) continue;
+                                
+                                if(cellTxt.toUpperCase().includes("PRICE FREEZE")) continue;
+                                
+                                cellTxt = formatIfExcelDate(cellTxt); 
+                                
+                                let yMatch = cellTxt.match(/\b(20[2-3]\d)\b/);
+                                if(yMatch) globalYear = parseInt(yMatch[1]);
+                                
+                                let mMatch = cellTxt.match(/\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\b/i);
+                                if(mMatch) globalMonth = normalizeMonth(mMatch[1]);
+                                
+                                let wM = cellTxt.match(/Week\s*(\d+)/i);
+                                if(wM) globalWeek = parseInt(wM[1]);
+
+                                let mmddyyyy = cellTxt.match(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\b/);
+                                if (mmddyyyy) {
+                                    let mNum = parseInt(mmddyyyy[1]);
+                                    let dNum = parseInt(mmddyyyy[2]);
+                                    let yNum = parseInt(mmddyyyy[3]);
+                                    
+                                    if (mNum > 12 && dNum <= 12) { let t = mNum; mNum = dNum; dNum = t; }
+                                    else if (mNum > 1000) { yNum = mNum; mNum = parseInt(mmddyyyy[2]); dNum = parseInt(mmddyyyy[3]); }
+                                    
+                                    if (yNum < 100) yNum += 2000;
+                                    if (mNum >= 1 && mNum <= 12) {
+                                        const mNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+                                        globalMonth = mNames[mNum - 1];
+                                        globalYear = yNum;
+                                    }
                                 }
                             }
-                            if(hRow === -1) return; 
+                        }
 
-                            function normalizeMonth(m) {
-                                if(!m) return "Unknown";
-                                m = m.toLowerCase();
-                                if(m.startsWith('jan')) return "January";
-                                if(m.startsWith('feb')) return "February";
-                                if(m.startsWith('mar')) return "March";
-                                if(m.startsWith('apr')) return "April";
-                                if(m.startsWith('may')) return "May";
-                                if(m.startsWith('jun')) return "June";
-                                if(m.startsWith('jul')) return "July";
-                                if(m.startsWith('aug')) return "August";
-                                if(m.startsWith('sep')) return "September";
-                                if(m.startsWith('oct')) return "October";
-                                if(m.startsWith('nov')) return "November";
-                                if(m.startsWith('dec')) return "December";
-                                return "Unknown";
+                        let colMap = { type: -1, cat: -1, prod: -1, brand: -1, specs: -1, srp: -1 };
+                        let maxCol = -1;
+                        
+                        let headerLimit = Math.min(jData[hRow].length, 50); 
+                        
+                        for(let c=0; c < headerLimit; c++) {
+                            let header = (jData[hRow][c] || "").toString().toUpperCase();
+                            if(!header) continue;
+                            if(header.includes("TYPE") && !header.includes("COMMODITY")) colMap.type = c;
+                            else if(header.includes("CATEGO")) colMap.cat = c;
+                            else if(header.includes("COMMODITY") || header.includes("PRODUCT")) colMap.prod = c;
+                            else if(header.includes("BRAND")) colMap.brand = c;
+                            else if(header.includes("SPEC")) colMap.specs = c;
+                            else if(header.includes("SRP") || header.includes("SUGGESTED")) colMap.srp = c;
+                        }
+                        
+                        if (colMap.prod === -1) colMap.prod = 2; 
+                        
+                        for(let key in colMap) {
+                            if(colMap[key] > maxCol) maxCol = colMap[key];
+                        }
+                        let storeStartCol = maxCol !== -1 ? maxCol + 1 : 6;
+
+                        let storesMap = {};
+                        let emptyCols = 0;
+                        let storeCount = 0;
+                        
+                        let lastYear = globalYear;
+                        let lastMonth = globalMonth;
+                        let lastWeek = globalWeek;
+                        let lastDateLabel = "";
+
+                        for(let c = storeStartCol; c < jData[hRow].length; c++) {
+                            
+                            let st = "";
+                            if (hRow >= 0 && jData[hRow][c]) st = jData[hRow][c].toString().trim();
+                            if (!st && hRow - 1 >= 0 && jData[hRow - 1][c]) st = jData[hRow - 1][c].toString().trim();
+                            if (!st && hRow - 2 >= 0 && jData[hRow - 2][c]) st = jData[hRow - 2][c].toString().trim();
+
+                            if(!st || ['MIN','MAX','MODE','AVERAGE','NAN'].includes(st.toUpperCase()) || st.toUpperCase().includes('WEEK') || st.toUpperCase().includes('FREEZE')) {
+                                emptyCols++;
+                                if (emptyCols > 10) break; 
+                                continue;
                             }
 
-                            // === PRE-SCAN GLOBALS START ===
-                            let globalYear = parseInt(uploadData.target_year) || new Date().getFullYear();
-                            let globalMonth = "Unknown";
-                            let globalWeek = 1;
-
-                            let fileMonthMatch = file.name.match(/\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\b/i);
-                            if (fileMonthMatch) globalMonth = normalizeMonth(fileMonthMatch[1]);
-
-                            let sheetMonthMatch = sheetName.match(/\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\b/i);
-                            if (sheetMonthMatch) globalMonth = normalizeMonth(sheetMonthMatch[1]);
+                            emptyCols = 0;
+                            storeCount++;
+                            
+                            let tempYear = lastYear;
+                            let tempMonth = lastMonth;
+                            let tempWeek = lastWeek;
+                            let tempDateLabel = lastDateLabel;
+                            let foundDateInfo = false;
 
                             for(let sR = 0; sR <= hRow; sR++) {
-                                for(let scanC = 0; scanC < jData[sR].length; scanC++) {
-                                    let cellTxt = (jData[sR][scanC] || "").toString().trim();
-                                    if(!cellTxt) continue;
-                                    
-                                    if(cellTxt.toUpperCase().includes("PRICE FREEZE")) continue;
-                                    
-                                    let yMatch = cellTxt.match(/\b(20[2-3]\d)\b/);
-                                    if(yMatch) globalYear = parseInt(yMatch[1]);
-                                    
-                                    let mMatch = cellTxt.match(/\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\b/i);
-                                    if(mMatch) globalMonth = normalizeMonth(mMatch[1]);
-                                    
-                                    let wM = cellTxt.match(/Week\s*(\d+)/i);
-                                    if(wM) globalWeek = parseInt(wM[1]);
+                                let cTxt = (jData[sR][c] || "").toString().trim();
+                                if (!cTxt) continue;
 
-                                    let mmddyyyy = cellTxt.match(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\b/);
-                                    if (mmddyyyy) {
-                                        let mNum = parseInt(mmddyyyy[1]);
-                                        let dNum = parseInt(mmddyyyy[2]);
-                                        let yNum = parseInt(mmddyyyy[3]);
-                                        
-                                        if (mNum > 12 && dNum <= 12) { let t = mNum; mNum = dNum; dNum = t; }
-                                        else if (mNum > 1000) { yNum = mNum; mNum = parseInt(mmddyyyy[2]); dNum = parseInt(mmddyyyy[3]); }
-                                        
-                                        if (yNum < 100) yNum += 2000;
-                                        if (mNum >= 1 && mNum <= 12) {
-                                            const mNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-                                            globalMonth = mNames[mNum - 1];
-                                            globalYear = yNum;
-                                        }
+                                if(cTxt.toUpperCase().includes("PRICE FREEZE")) continue;
+
+                                cTxt = formatIfExcelDate(cTxt); 
+
+                                let yMatch = cTxt.match(/\b(20[2-3]\d)\b/);
+                                if(yMatch) { tempYear = parseInt(yMatch[1]); foundDateInfo = true; }
+
+                                let mMatch = cTxt.match(/\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\b/i);
+                                if(mMatch) { tempMonth = normalizeMonth(mMatch[1]); foundDateInfo = true; }
+
+                                let mmddyyyy = cTxt.match(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\b/);
+                                if (mmddyyyy) {
+                                    let mNum = parseInt(mmddyyyy[1]);
+                                    let dNum = parseInt(mmddyyyy[2]);
+                                    let yNum = parseInt(mmddyyyy[3]);
+                                    
+                                    if (mNum > 12 && dNum <= 12) { let t = mNum; mNum = dNum; dNum = t; }
+                                    else if (mNum > 1000) { yNum = mNum; mNum = parseInt(mmddyyyy[2]); dNum = parseInt(mmddyyyy[3]); }
+                                    
+                                    if (yNum < 100) yNum += 2000;
+                                    if (mNum >= 1 && mNum <= 12) {
+                                        const mNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+                                        tempMonth = mNames[mNum - 1];
+                                        tempYear = yNum;
+                                        tempDateLabel = `${tempMonth} ${dNum}, ${tempYear}`;
+                                        tempWeek = Math.ceil(dNum / 7);
+                                        if(tempWeek < 1) tempWeek = 1;
+                                        if(tempWeek > 5) tempWeek = 5;
+                                        foundDateInfo = true;
                                     }
                                 }
-                            }
-                            // === PRE-SCAN GLOBALS END ===
 
-                            let colMap = { type: -1, cat: -1, prod: -1, brand: -1, specs: -1, srp: -1 };
-                            let maxCol = -1;
-                            
-                            let headerLimit = Math.min(jData[hRow].length, 50); 
-                            
-                            for(let c=0; c < headerLimit; c++) {
-                                let header = (jData[hRow][c] || "").toString().toUpperCase();
-                                if(!header) continue;
-                                if(header.includes("TYPE") && !header.includes("COMMODITY")) colMap.type = c;
-                                else if(header.includes("CATEGO")) colMap.cat = c;
-                                else if(header.includes("COMMODITY") || header.includes("PRODUCT")) colMap.prod = c;
-                                else if(header.includes("BRAND")) colMap.brand = c;
-                                else if(header.includes("SPEC")) colMap.specs = c;
-                                else if(header.includes("SRP") || header.includes("SUGGESTED")) colMap.srp = c;
-                            }
-                            
-                            if (colMap.prod === -1) colMap.prod = 2; 
-                            
-                            for(let key in colMap) {
-                                if(colMap[key] > maxCol) maxCol = colMap[key];
-                            }
-                            let storeStartCol = maxCol !== -1 ? maxCol + 1 : 6;
-
-                            let storesMap = {};
-                            let emptyCols = 0;
-                            let storeCount = 0;
-                            
-                            let lastYear = globalYear;
-                            let lastMonth = globalMonth;
-                            let lastWeek = globalWeek;
-                            let lastDateLabel = "";
-
-                            for(let c = storeStartCol; c < jData[hRow].length; c++) {
-                                
-                                let st = "";
-                                if (hRow >= 0 && jData[hRow][c]) st = jData[hRow][c].toString().trim();
-                                if (!st && hRow - 1 >= 0 && jData[hRow - 1][c]) st = jData[hRow - 1][c].toString().trim();
-                                if (!st && hRow - 2 >= 0 && jData[hRow - 2][c]) st = jData[hRow - 2][c].toString().trim();
-
-                                if(!st || ['MIN','MAX','MODE','AVERAGE','NAN'].includes(st.toUpperCase()) || st.toUpperCase().includes('WEEK')) {
-                                    emptyCols++;
-                                    if (emptyCols > 10) break; 
-                                    continue;
-                                }
-
-                                emptyCols = 0;
-                                storeCount++;
-                                
-                                let tempYear = lastYear;
-                                let tempMonth = lastMonth;
-                                let tempWeek = lastWeek;
-                                let tempDateLabel = lastDateLabel;
-                                let foundDateInfo = false;
-
-                                for(let sR = 0; sR <= hRow; sR++) {
-                                    let cTxt = (jData[sR][c] || "").toString().trim();
-                                    if (!cTxt) continue;
-
-                                    if(cTxt.toUpperCase().includes("PRICE FREEZE")) continue;
-
-                                    let yMatch = cTxt.match(/\b(20[2-3]\d)\b/);
-                                    if(yMatch) { tempYear = parseInt(yMatch[1]); foundDateInfo = true; }
-
-                                    let mMatch = cTxt.match(/\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\b/i);
-                                    if(mMatch) { tempMonth = normalizeMonth(mMatch[1]); foundDateInfo = true; }
-
-                                    let mmddyyyy = cTxt.match(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\b/);
-                                    if (mmddyyyy) {
-                                        let mNum = parseInt(mmddyyyy[1]);
-                                        let dNum = parseInt(mmddyyyy[2]);
-                                        let yNum = parseInt(mmddyyyy[3]);
-                                        
-                                        if (mNum > 12 && dNum <= 12) { let t = mNum; mNum = dNum; dNum = t; }
-                                        else if (mNum > 1000) { yNum = mNum; mNum = parseInt(mmddyyyy[2]); dNum = parseInt(mmddyyyy[3]); }
-                                        
-                                        if (yNum < 100) yNum += 2000;
-                                        if (mNum >= 1 && mNum <= 12) {
-                                            const mNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-                                            tempMonth = mNames[mNum - 1];
-                                            tempYear = yNum;
-                                            tempDateLabel = `${tempMonth} ${dNum}, ${tempYear}`;
-                                            tempWeek = Math.ceil(dNum / 7);
-                                            if(tempWeek < 1) tempWeek = 1;
-                                            if(tempWeek > 5) tempWeek = 5;
-                                            foundDateInfo = true;
-                                        }
+                                let rangeMatch = cTxt.match(/\b(\d{1,2})\s*(?:-|to|and|&)\s*(\d{1,2})\b/i);
+                                if (!mmddyyyy && rangeMatch && !cTxt.toUpperCase().includes('WEEK')) {
+                                    let startDay = parseInt(rangeMatch[1]);
+                                    let endDay = parseInt(rangeMatch[2]);
+                                    if (startDay <= 31 && endDay <= 31) {
+                                        tempDateLabel = `${tempMonth !== 'Unknown' ? tempMonth + ' ' : ''}${startDay}-${endDay}, ${tempYear}`;
+                                        tempWeek = Math.ceil(startDay / 7);
+                                        if(tempWeek < 1) tempWeek = 1;
+                                        if(tempWeek > 5) tempWeek = 5;
+                                        foundDateInfo = true;
                                     }
-
-                                    let rangeMatch = cTxt.match(/\b(\d{1,2})\s*(?:-|to|and|&)\s*(\d{1,2})\b/i);
-                                    if (!mmddyyyy && rangeMatch && !cTxt.toUpperCase().includes('WEEK')) {
-                                        let startDay = parseInt(rangeMatch[1]);
-                                        let endDay = parseInt(rangeMatch[2]);
-                                        if (startDay <= 31 && endDay <= 31) {
-                                            tempDateLabel = `${tempMonth !== 'Unknown' ? tempMonth + ' ' : ''}${startDay}-${endDay}, ${tempYear}`;
-                                            tempWeek = Math.ceil(startDay / 7);
-                                            if(tempWeek < 1) tempWeek = 1;
-                                            if(tempWeek > 5) tempWeek = 5;
-                                            foundDateInfo = true;
-                                        }
-                                    } 
-                                    else if (!mmddyyyy && /Week\s*(\d+)/i.test(cTxt)) {
-                                        let wM = cTxt.match(/Week\s*(\d+)/i);
-                                        if(wM) { 
-                                            tempWeek = parseInt(wM[1]); 
-                                            tempDateLabel = `Week ${tempWeek} of ${tempMonth} ${tempYear}`;
-                                            foundDateInfo = true; 
-                                        }
-                                    } 
-                                    else if (!mmddyyyy && !rangeMatch) {
-                                        let exactDateMatch = cTxt.match(/\b([A-Za-z]+)\s+(\d{1,2})\b/);
-                                        if (exactDateMatch && !cTxt.includes("-") && !cTxt.includes("to")) {
-                                            let parsedM = normalizeMonth(exactDateMatch[1]);
-                                            if (parsedM !== "Unknown") {
-                                                let d = parseInt(exactDateMatch[2]);
-                                                if (d <= 31) {
-                                                    tempMonth = parsedM;
-                                                    tempDateLabel = `${tempMonth} ${d}, ${tempYear}`;
-                                                    tempWeek = Math.ceil(d / 7);
-                                                    if(tempWeek < 1) tempWeek = 1;
-                                                    if(tempWeek > 5) tempWeek = 5;
-                                                    foundDateInfo = true;
-                                                }
+                                } 
+                                else if (!mmddyyyy && /Week\s*(\d+)/i.test(cTxt)) {
+                                    let wM = cTxt.match(/Week\s*(\d+)/i);
+                                    if(wM) { 
+                                        tempWeek = parseInt(wM[1]); 
+                                        tempDateLabel = `Week ${tempWeek} of ${tempMonth} ${tempYear}`;
+                                        foundDateInfo = true; 
+                                    }
+                                } 
+                                else if (!mmddyyyy && !rangeMatch) {
+                                    let exactDateMatch = cTxt.match(/\b([A-Za-z]+)\s+(\d{1,2})\b/);
+                                    if (exactDateMatch && !cTxt.includes("-") && !cTxt.includes("to")) {
+                                        let parsedM = normalizeMonth(exactDateMatch[1]);
+                                        if (parsedM !== "Unknown") {
+                                            let d = parseInt(exactDateMatch[2]);
+                                            if (d <= 31) {
+                                                tempMonth = parsedM;
+                                                tempDateLabel = `${tempMonth} ${d}, ${tempYear}`;
+                                                tempWeek = Math.ceil(d / 7);
+                                                if(tempWeek < 1) tempWeek = 1;
+                                                if(tempWeek > 5) tempWeek = 5;
+                                                foundDateInfo = true;
                                             }
                                         }
                                     }
                                 }
-
-                                if (foundDateInfo) {
-                                    lastYear = tempYear;
-                                    lastMonth = tempMonth;
-                                    lastWeek = tempWeek;
-                                    lastDateLabel = tempDateLabel;
-                                }
-
-                                if (!lastDateLabel || lastDateLabel.trim() === "") {
-                                    lastDateLabel = `Week ${lastWeek} of ${lastMonth} ${lastYear}`;
-                                }
-
-                                storesMap[c] = { store: st.substring(0,145), year: lastYear, month: lastMonth, week: lastWeek, date_label: lastDateLabel };
                             }
 
-                            let sheetType = 'BN';
-                            if (sn.includes("prime") || sn.includes("pc") || sn.includes("commodity")) {
-                                sheetType = 'PC';
+                            if (foundDateInfo) {
+                                lastYear = tempYear;
+                                lastMonth = tempMonth;
+                                lastWeek = tempWeek;
+                                lastDateLabel = tempDateLabel;
                             }
 
-                            for(let r = hRow + 1; r < jData.length; r++) {
-                                if (!jData[r] || jData[r].length === 0) continue;
-                                
-                                let prod = colMap.prod !== -1 && jData[r][colMap.prod] ? jData[r][colMap.prod].toString().trim() : null;
-                                if(!prod || prod.toUpperCase() === 'COMMODITY' || prod.toUpperCase() === 'PRODUCT CATEGORY') continue;
-
-                                let currentType = colMap.type !== -1 && jData[r][colMap.type] ? jData[r][colMap.type].toString().trim().toUpperCase() : null;
-                                let currentCat = colMap.cat !== -1 && jData[r][colMap.cat] ? jData[r][colMap.cat].toString().trim() : null;
-                                let currentBrand = colMap.brand !== -1 && jData[r][colMap.brand] ? jData[r][colMap.brand].toString().trim() : null;
-                                let sRaw = colMap.specs !== -1 && jData[r][colMap.specs] ? jData[r][colMap.specs].toString().trim() : "N/A";
-                                
-                                let srpStr = colMap.srp !== -1 && jData[r][colMap.srp] ? jData[r][colMap.srp].toString().replace(/[^0-9.]/g, '') : null;
-                                let srpRaw = (srpStr && !isNaN(srpStr)) ? parseFloat(srpStr) : null;
-
-                                let tCode = sheetType;
-                                if (currentType) {
-                                    if (currentType.includes('PRIME') || currentType.includes('PC')) tCode = 'PC';
-                                    else if (currentType.includes('BASIC') || currentType.includes('BN')) tCode = 'BN';
-                                }
-                                let tName = (tCode === 'PC') ? 'Prime Commodity' : 'Basic Necessity';
-
-                                for(let col in storesMap) {
-                                    let prStr = jData[r][col]?.toString().replace(/[^0-9.]/g, '');
-                                    let prVal = (prStr && !isNaN(prStr) && parseFloat(prStr) > 0) ? parseFloat(prStr) : null;
-                                    
-                                    allFlatData.push({
-                                        type_code: tCode, type_name: tName,
-                                        cat: currentCat || "Uncategorized", 
-                                        brand: currentBrand || "No Brand",
-                                        prod: prod, specs: sRaw, srp: srpRaw,
-                                        price: prVal, 
-                                        store: storesMap[col].store, year: storesMap[col].year, 
-                                        month: storesMap[col].month, week: storesMap[col].week, 
-                                        date_label: storesMap[col].date_label
-                                    });
-                                }
+                            if (!lastDateLabel || lastDateLabel.trim() === "") {
+                                lastDateLabel = `Week ${lastWeek} of ${lastMonth} ${lastYear}`;
                             }
-                        });
 
-                        if(allFlatData.length === 0) {
-                            clearInterval(timerInterval);
-                            alert("No valid products found. Ensure the file follows the format template.");
-                            location.reload(); return;
+                            storesMap[c] = { store: st.substring(0,145), year: lastYear, month: lastMonth, week: lastWeek, date_label: lastDateLabel };
                         }
 
-                        let chunkSize = 250; 
-                        let totalChunks = Math.ceil(allFlatData.length / chunkSize);
-                        let hasError = false;
-                        
-                        async function saveChunksSequentially() {
-                            for(let i=0; i < allFlatData.length; i += chunkSize) {
-                                let currentChunk = Math.floor(i/chunkSize) + 1;
-                                statusText.innerText = `Step 3: Saving batch ${currentChunk} of ${totalChunks} to database...`;
+                        let sheetType = 'BN';
+                        if (sn.includes("prime") || sn.includes("pc") || sn.includes("commodity")) {
+                            sheetType = 'PC';
+                        }
+
+                        for(let r = hRow + 1; r < jData.length; r++) {
+                            if (!jData[r] || jData[r].length === 0) continue;
+                            
+                            let prod = colMap.prod !== -1 && jData[r][colMap.prod] ? jData[r][colMap.prod].toString().trim() : null;
+                            if(!prod || prod.toUpperCase() === 'COMMODITY' || prod.toUpperCase() === 'PRODUCT CATEGORY') continue;
+
+                            let currentType = colMap.type !== -1 && jData[r][colMap.type] ? jData[r][colMap.type].toString().trim().toUpperCase() : null;
+                            let currentCat = colMap.cat !== -1 && jData[r][colMap.cat] ? jData[r][colMap.cat].toString().trim() : null;
+                            let currentBrand = colMap.brand !== -1 && jData[r][colMap.brand] ? jData[r][colMap.brand].toString().trim() : null;
+                            let sRaw = colMap.specs !== -1 && jData[r][colMap.specs] ? jData[r][colMap.specs].toString().trim() : "N/A";
+                            
+                            let srpStr = colMap.srp !== -1 && jData[r][colMap.srp] ? jData[r][colMap.srp].toString().replace(/[^0-9.]/g, '') : null;
+                            let srpRaw = (srpStr && !isNaN(srpStr)) ? parseFloat(srpStr) : null;
+
+                            let tCode = sheetType;
+                            if (currentType) {
+                                if (currentType.includes('PRIME') || currentType.includes('PC')) tCode = 'PC';
+                                else if (currentType.includes('BASIC') || currentType.includes('BN')) tCode = 'BN';
+                            }
+                            let tName = (tCode === 'PC') ? 'Prime Commodity' : 'Basic Necessity';
+
+                            for(let col in storesMap) {
+                                let prStr = jData[r][col]?.toString().replace(/[^0-9.]/g, '');
+                                let prVal = (prStr && !isNaN(prStr) && parseFloat(prStr) > 0) ? parseFloat(prStr) : null;
                                 
-                                let chunk = allFlatData.slice(i, i+chunkSize);
-                                let saveRes = await fetch('ajax_handler.php', {
-                                    method: 'POST',
-                                    headers: {'Content-Type': 'application/json'},
-                                    body: JSON.stringify({
-                                        action: 'save_chunk',
-                                        file_id: uploadData.file_id,
-                                        province_id: uploadData.province_id,
-                                        srp_date_label: extractedSrpDate,
-                                        data: chunk
-                                    })
+                                allFlatData.push({
+                                    type_code: tCode, type_name: tName,
+                                    cat: currentCat || "Uncategorized", 
+                                    brand: currentBrand || "No Brand",
+                                    prod: prod, specs: sRaw, srp: srpRaw,
+                                    price: prVal, 
+                                    store: storesMap[col].store, year: storesMap[col].year, 
+                                    month: storesMap[col].month, week: storesMap[col].week, 
+                                    date_label: storesMap[col].date_label
                                 });
-                                
-                                let saveData = await saveRes.json();
-                                
-                                if(saveData.status !== 'success') {
-                                    clearInterval(timerInterval);
-                                    alert("Database Error Details:\n" + saveData.message);
-                                    hasError = true;
-                                    break;
-                                }
-                            }
-
-                            if (!hasError) {
-                                clearInterval(timerInterval);
-                                document.getElementById('spinnerIcon').classList.remove('spin');
-                                document.getElementById('spinnerIcon').classList.replace('bi-arrow-repeat', 'bi-check-circle');
-                                statusText.innerText = `Success! Fully extracted and saved ${allFlatData.length} records. Reloading...`;
-                                setTimeout(() => { window.location.reload(); }, 1500);
-                            } else {
-                                clearInterval(timerInterval);
-                                statusText.innerText = `Extraction failed. Check the alert box.`;
-                                document.getElementById('spinnerIcon').classList.remove('spin');
-                                document.getElementById('spinnerIcon').classList.replace('bi-arrow-repeat', 'bi-exclamation-triangle-fill');
                             }
                         }
-                        
-                        saveChunksSequentially();
+                    });
 
-                    };
-                    reader.readAsArrayBuffer(file);
-                }, 100);
-            })
-            .catch(error => {
-                clearInterval(timerInterval);
-                alert("Upload process failed. Check console.");
-                console.error(error);
-                location.reload();
-            });
+                    if(allFlatData.length === 0) {
+                        spinnerIcon.classList.replace('bi-hourglass-split', 'bi-exclamation-triangle-fill');
+                        spinnerIcon.classList.replace('text-primary', 'text-danger');
+                        statusText.innerText = "No valid products found. Ensure the file follows the format template.";
+                        setTimeout(() => { location.reload(); }, 3000);
+                        return;
+                    }
+
+                    let chunkSize = 250; 
+                    let totalChunks = Math.ceil(allFlatData.length / chunkSize);
+                    let hasError = false;
+                    
+                    async function saveChunksSequentially() {
+                        for(let i=0; i < allFlatData.length; i += chunkSize) {
+                            let currentChunk = Math.floor(i/chunkSize) + 1;
+                            statusText.innerText = `Step 3: Saving batch ${currentChunk} of ${totalChunks} to database...`;
+                            
+                            let chunk = allFlatData.slice(i, i+chunkSize);
+                            let saveRes = await fetch('ajax_handler.php', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({
+                                    action: 'save_chunk',
+                                    file_id: uploadData.file_id,
+                                    province_id: uploadData.province_id,
+                                    srp_date_label: extractedSrpDate,
+                                    data: chunk
+                                })
+                            });
+                            
+                            let saveData = await saveRes.json();
+                            
+                            if(saveData.status !== 'success') {
+                                spinnerIcon.classList.replace('bi-hourglass-split', 'bi-exclamation-triangle-fill');
+                                spinnerIcon.classList.replace('text-primary', 'text-danger');
+                                statusText.innerText = "Database Error Details: " + saveData.message;
+                                hasError = true;
+                                setTimeout(() => { location.reload(); }, 4000);
+                                break;
+                            }
+                        }
+
+                        if (!hasError) {
+                            let fdFinish = new FormData();
+                            fdFinish.append('action', 'mark_file_finished');
+                            fdFinish.append('file_id', uploadData.file_id);
+                            await fetch('ajax_handler.php', { method: 'POST', body: fdFinish });
+
+                            sessionStorage.removeItem('products_masterlist_cache');
+                            sessionStorage.removeItem('movement_log_cache');
+                            Object.keys(sessionStorage).forEach(key => {
+                                if (key.startsWith('prov_part') || key.startsWith('regional_cache_') || key.startsWith('comp_cache_')) {
+                                    sessionStorage.removeItem(key);
+                                }
+                            });
+
+                            let timeDiff = Math.floor((Date.now() - uploadStartTime) / 1000);
+                            
+                            spinnerIcon.classList.remove('spin');
+                            spinnerIcon.classList.replace('bi-hourglass-split', 'bi-check-circle');
+                            spinnerIcon.classList.replace('text-primary', 'text-success');
+                            statusText.innerText = `Success! Extracted ${allFlatData.length} records in ${timeDiff} seconds. Redirecting...`;
+                            
+                            setTimeout(() => { 
+                                window.location.href = 'provincial.php?part=2&file_id=' + uploadData.file_id; 
+                            }, 2000);
+                        }
+                    }
+                    
+                    saveChunksSequentially();
+
+                };
+                reader.readAsArrayBuffer(file);
+            }, 100);
+        })
+        .catch(error => {
+            alert("Upload process failed. Check console.");
+            console.error(error);
+            location.reload();
         });
+    });
+</script>
 
-        function updateAdminProfile(e) {
-            e.preventDefault();
-            showConfirmModal('Update Profile', 'Are you sure you want to save these profile changes?', 'dark', '<i class="bi bi-check-circle"></i> Save Changes', async function() {
-                const btn = document.querySelector('#profileForm button[type="submit"]');
-                const origText = btn.innerText;
-                btn.innerText = "Saving..."; btn.disabled = true;
-
-                let fd = new FormData();
-                fd.append('action', 'update_admin_profile');
-                fd.append('firstname', document.getElementById('adminFirstName').value);
-                fd.append('lastname', document.getElementById('adminLastName').value);
-                fd.append('username', document.getElementById('adminUsername').value);
-
-                try {
-                    let res = await fetch('ajax_handler.php', { method: 'POST', body: fd });
-                    let data = await res.json();
-                    if(data.status === 'success') {
-                        alert("Profile updated successfully!");
-                        location.reload();
-                    } else {
-                        alert("Error: " + data.message);
-                    }
-                } catch(err) { alert("Connection error."); }
-                btn.innerText = origText; btn.disabled = false;
-            });
-        }
-
-        function updateAdminPassword(e) {
-            e.preventDefault();
-            let newPass = document.getElementById('newPassword').value;
-            let confPass = document.getElementById('confirmPassword').value;
-            
-            if (newPass !== confPass) {
-                alert("New passwords do not match!");
-                return;
-            }
-
-            showConfirmModal('Update Password', 'Are you sure you want to change your password? You will be securely logged out after.', 'primary', '<i class="bi bi-shield-lock"></i> Update Password', async function() {
-                const btn = document.querySelector('#passwordForm button[type="submit"]');
-                const origText = btn.innerText;
-                btn.innerText = "Updating..."; btn.disabled = true;
-
-                let fd = new FormData();
-                fd.append('action', 'update_admin_password');
-                fd.append('current_password', document.getElementById('currentPassword').value);
-                fd.append('new_password', newPass);
-
-                try {
-                    let res = await fetch('ajax_handler.php', { method: 'POST', body: fd });
-                    let data = await res.json();
-                    if(data.status === 'success') {
-                        alert("Password updated successfully! Please log in again with your new credentials.");
-                        window.location.href = '../admin/logout.php';
-                    } else {
-                        alert("Error: " + data.message);
-                    }
-                } catch(err) { alert("Connection error."); }
-                btn.innerText = origText; btn.disabled = false;
-            });
-        }
-    </script>
-</body>
-</html>
+<?php 
+// -------------------------------------------------------------
+// PULL IN THE MASTER FOOTER (Modals and Global Scripts)
+// -------------------------------------------------------------
+include '../includes/footer.php'; 
+?>
