@@ -16,6 +16,33 @@ class Admin {
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
+    // UPGRADED: Add Province now accepts aliases
+    public function addProvince($province_name, $aliases = null) {
+        $check = $this->conn->prepare("SELECT id FROM provinces WHERE LOWER(province_name) = ?");
+        $check->execute([strtolower(trim($province_name))]);
+        if ($check->fetchColumn()) {
+            throw new Exception("This province already exists in the system.");
+        }
+        $stmt = $this->conn->prepare("INSERT INTO provinces (province_name, aliases) VALUES (?, ?)");
+        return $stmt->execute([trim($province_name), trim($aliases)]);
+    }
+
+    // NEW: Update Province
+    public function updateProvince($id, $province_name, $aliases) {
+        $stmt = $this->conn->prepare("UPDATE provinces SET province_name = ?, aliases = ? WHERE id = ?");
+        return $stmt->execute([trim($province_name), trim($aliases), $id]);
+    }
+
+    // NEW: Delete Province
+    public function deleteProvince($id) {
+        try {
+            $stmt = $this->conn->prepare("DELETE FROM provinces WHERE id = ?");
+            $stmt->execute([$id]);
+        } catch (Exception $e) {
+            throw new Exception("Cannot delete this province. It is currently linked to existing stores or uploaded files.");
+        }
+    }
+
     public function getAvailableYears() {
         $stmt = $this->conn->prepare("SELECT DISTINCT year FROM monitoring_periods WHERE EXISTS (SELECT 1 FROM price_records WHERE period_id = monitoring_periods.id) ORDER BY year DESC");
         $stmt->execute();
@@ -196,22 +223,23 @@ class Admin {
     }
 
     public function getRegionalReport($year, $month = null, $period_id = null, $type = null) {
+        $provStmt = $this->conn->query("SELECT id, province_name FROM provinces ORDER BY id ASC");
+        $allProvinces = $provStmt->fetchAll(PDO::FETCH_ASSOC);
+
         $sub_params = [$year];
         $period_condition = "mp.year = ?";
         if (!empty($month)) { $period_condition .= " AND mp.month = ?"; $sub_params[] = $month; }
         if (!empty($period_id)) { $period_condition .= " AND mp.id = ?"; $sub_params[] = $period_id; }
-        $sql = "SELECT ct.type_code, c.category_name, b.brand_name, p.product_name, pv.specifications, 
-                       MIN(CASE WHEN pr_filtered.province_id = 1 THEN pr_filtered.actual_price END) as p1_min,
-                       MAX(CASE WHEN pr_filtered.province_id = 1 THEN pr_filtered.actual_price END) as p1_max,
-                       MIN(CASE WHEN pr_filtered.province_id = 4 THEN pr_filtered.actual_price END) as p4_min,
-                       MAX(CASE WHEN pr_filtered.province_id = 4 THEN pr_filtered.actual_price END) as p4_max,
-                       MIN(CASE WHEN pr_filtered.province_id = 5 THEN pr_filtered.actual_price END) as p5_min,
-                       MAX(CASE WHEN pr_filtered.province_id = 5 THEN pr_filtered.actual_price END) as p5_max,
-                       MIN(CASE WHEN pr_filtered.province_id = 2 THEN pr_filtered.actual_price END) as p2_min,
-                       MAX(CASE WHEN pr_filtered.province_id = 2 THEN pr_filtered.actual_price END) as p2_max,
-                       MIN(CASE WHEN pr_filtered.province_id = 3 THEN pr_filtered.actual_price END) as p3_min,
-                       MAX(CASE WHEN pr_filtered.province_id = 3 THEN pr_filtered.actual_price END) as p3_max
-                FROM products p
+        
+        $sql = "SELECT ct.type_code, c.category_name, b.brand_name, p.product_name, pv.specifications ";
+        
+        foreach ($allProvinces as $prov) {
+            $pid = $prov['id'];
+            $sql .= ", MIN(CASE WHEN pr_filtered.province_id = {$pid} THEN pr_filtered.actual_price END) as p{$pid}_min ";
+            $sql .= ", MAX(CASE WHEN pr_filtered.province_id = {$pid} THEN pr_filtered.actual_price END) as p{$pid}_max ";
+        }
+        
+        $sql .= " FROM products p
                 JOIN product_variants pv ON p.id = pv.product_id
                 JOIN commodity_types ct ON p.type_id = ct.id
                 JOIN categories c ON p.category_id = c.id
@@ -224,12 +252,19 @@ class Admin {
                     WHERE $period_condition AND pr.actual_price > 0
                 ) pr_filtered ON pv.id = pr_filtered.variant_id
                 WHERE 1=1 ";
+                
         $main_params = $sub_params;
         if (!empty($type) && $type != 'All') { $sql .= " AND ct.type_code = ?"; $main_params[] = $type; }
         $sql .= " GROUP BY pv.id ORDER BY ct.type_code, c.category_name, b.brand_name, p.product_name, pv.specifications";
+        
         $stmt = $this->conn->prepare($sql);
         $stmt->execute($main_params);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        return [
+            'provinces' => $allProvinces,
+            'data' => $data
+        ];
     }
 
     public function getAllProducts() {
@@ -257,20 +292,54 @@ class Admin {
         $cond = "WHERE pr.variant_id = ? AND mp.year = ? AND pr.actual_price > 0 AND UPPER(st.store_name) NOT LIKE '%PRICE FREEZE%'";
         if (!empty($month)) { $cond .= " AND mp.month = ?"; $params[] = $month; }
         if ($province_id != 'All') { $cond .= " AND st.province_id = ?"; $params[] = $province_id; }
+        
         $agg_sql = "SELECT MIN(pr.actual_price) as min_price, MAX(pr.actual_price) as max_price FROM price_records pr JOIN stores st ON pr.store_id = st.id JOIN monitoring_periods mp ON pr.period_id = mp.id $cond";
         $stmtAgg = $this->conn->prepare($agg_sql); $stmtAgg->execute($params);
         $agg_data = $stmtAgg->fetch(PDO::FETCH_ASSOC);
-        $min_data = false; $max_data = false;
+        
+        $min_data = false; $max_data = false; $itemizedData = [];
+
         if ($agg_data && $agg_data['min_price'] !== null) {
             $min_price = $agg_data['min_price']; $max_price = $agg_data['max_price'];
+            
             $min_sql = "SELECT DISTINCT st.store_name FROM price_records pr JOIN stores st ON pr.store_id = st.id JOIN monitoring_periods mp ON pr.period_id = mp.id $cond AND pr.actual_price = ?";
             $mP = $params; $mP[] = $min_price; $sMin = $this->conn->prepare($min_sql); $sMin->execute($mP);
             $min_data = ['actual_price' => $min_price, 'store_name' => implode(", ", $sMin->fetchAll(PDO::FETCH_COLUMN))];
+            
             $max_sql = "SELECT DISTINCT st.store_name FROM price_records pr JOIN stores st ON pr.store_id = st.id JOIN monitoring_periods mp ON pr.period_id = mp.id $cond AND pr.actual_price = ?";
             $xP = $params; $xP[] = $max_price; $sMax = $this->conn->prepare($max_sql); $sMax->execute($xP);
             $max_data = ['actual_price' => $max_price, 'store_name' => implode(", ", $sMax->fetchAll(PDO::FETCH_COLUMN))];
+
+            $itemized_sql = "
+                SELECT st.store_name, pr.actual_price, prov.province_name 
+                FROM price_records pr 
+                JOIN stores st ON pr.store_id = st.id 
+                JOIN provinces prov ON st.province_id = prov.id
+                JOIN monitoring_periods mp ON pr.period_id = mp.id 
+                $cond
+                ORDER BY prov.province_name ASC, pr.actual_price ASC";
+            
+            $stmtItemized = $this->conn->prepare($itemized_sql);
+            $stmtItemized->execute($params);
+            $raw_items = $stmtItemized->fetchAll(PDO::FETCH_ASSOC);
+
+            foreach($raw_items as $item) {
+                $pName = $item['province_name'];
+                if(!isset($itemizedData[$pName])) {
+                    $itemizedData[$pName] = [];
+                }
+                $exists = false;
+                foreach($itemizedData[$pName] as $existingStore) {
+                    if($existingStore['store'] === $item['store_name']) {
+                        $exists = true; break;
+                    }
+                }
+                if(!$exists) {
+                    $itemizedData[$pName][] = ['store' => $item['store_name'], 'price' => $item['actual_price']];
+                }
+            }
         }
-        return ['lowest' => $min_data, 'highest' => $max_data];
+        return ['lowest' => $min_data, 'highest' => $max_data, 'itemized' => $itemizedData];
     }
 
     public function getTrendData($variant_id, $year, $month = null, $province_id = 'All') {
@@ -306,9 +375,6 @@ class Admin {
         return $stats;
     }
 
-    /**
-     * SRP COMPLIANCE REPORT Logic
-     */
     public function getSRPComplianceReport($province_id, $year, $month = null, $period_id = null) {
         $params = [$province_id, $year];
         $period_cond = "st.province_id = ? AND mp.year = ?";
@@ -346,7 +412,7 @@ class Admin {
                     'category_name' => $row['category_name'],
                     'above_stores' => [], 
                     'below_stores' => [],
-                    'no_srp_stores' => [] // New array for NO SRP data
+                    'no_srp_stores' => [] 
                 ];
             }
             
@@ -355,7 +421,7 @@ class Admin {
             
             $srp = $row['srp'];
             if (empty($srp) || $srp <= 0) {
-                $grouped[$vid]['no_srp_stores'][] = $storeData; // Categorize as NO SRP
+                $grouped[$vid]['no_srp_stores'][] = $storeData; 
             } else if ($row['actual_price'] > $srp) { 
                 $grouped[$vid]['above_stores'][] = $storeData; 
             } else { 

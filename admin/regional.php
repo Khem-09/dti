@@ -1,5 +1,4 @@
 <?php
-    // CRITICAL FIX: Start output buffering to prevent stray spaces or warnings from corrupting the JSON
     ob_start();
 
     session_start();
@@ -23,6 +22,9 @@
     $admin_first = $adminRow['firstname'] ?? '';
     $admin_last = $adminRow['lastname'] ?? '';
 
+    // DYNAMIC COLUMNS FIX: Fetch provinces directly
+    $provinces = $admin->getProvinces();
+
     $availableYears = $admin->getAvailableYears();
     $latest_db_year = (count($availableYears) > 0) ? $availableYears[0]['year'] : ''; 
     
@@ -45,21 +47,20 @@
         }
     }
 
-    // ------------------------------------------------------------------------------------------
-    // THE SPEED FIX: ONLY run the heavy database queries if requested via background AJAX
-    // This allows the main HTML structure below to load instantly in 0.01 seconds.
-    // ------------------------------------------------------------------------------------------
     if (isset($_GET['fetch_ajax_data'])) {
-        $reportData = $admin->getRegionalReport($filter_year, $filter_month, $filter_week, $filter_type);
-        $exportData = $admin->getRegionalReport($filter_year, $filter_month, $filter_week, 'All');
+        $reportOutput = $admin->getRegionalReport($filter_year, $filter_month, $filter_week, $filter_type);
+        $exportOutput = $admin->getRegionalReport($filter_year, $filter_month, $filter_week, 'All');
         
-        // Deep clean the buffer before sending JSON to prevent crashes
         while (ob_get_level() > 0) {
             ob_end_clean();
         }
         
         header('Content-Type: application/json');
-        echo json_encode(['reportData' => $reportData, 'exportData' => $exportData]);
+        // Extract the 'data' part since getRegionalReport now returns ['provinces' => [], 'data' => []]
+        echo json_encode([
+            'reportData' => $reportOutput['data'], 
+            'exportData' => $exportOutput['data']
+        ]);
         exit();
     }
 ?>
@@ -74,7 +75,7 @@
     <link rel="stylesheet" href="../bootstrap/css/bootstrap.min.css">
     <link rel="stylesheet" href="../bootstrap/icons/bootstrap-icons.css">
     <link rel="stylesheet" href="../assets/css/regional.css">
-    <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+    <script src="../assets/js/xlsx.full.min.js"></script>
     <style>
         .spin { animation: spin 1s linear infinite; }
         @keyframes spin { 100% { transform: rotate(360deg); } }
@@ -84,7 +85,6 @@
         .btn-action i { font-size: 1.05rem; }
         .dropdown-toggle::after { vertical-align: middle; }
 
-        /* Custom elegant scrollbar for the table */
         .table-responsive::-webkit-scrollbar { width: 8px; height: 8px; }
         .table-responsive::-webkit-scrollbar-track { background: #f8f9fa; border-radius: 8px; }
         .table-responsive::-webkit-scrollbar-thumb { background: #cbd0d5; border-radius: 8px; }
@@ -208,7 +208,7 @@
                                 <?php endforeach; ?>
                             </select>
 
-                            </form>
+                        </form>
                     </div>
 
                     <div class="mb-3 px-2 d-flex flex-column flex-md-row justify-content-between align-items-md-end gap-3" style="font-size: 1rem;">
@@ -249,16 +249,15 @@
                                     <th class="fw-bold text-dark" style="background-color: #f8f9fa;">Brand</th>
                                     <th class="fw-bold text-dark" style="background-color: #f8f9fa;">Product Name</th>
                                     <th class="fw-bold text-secondary" style="background-color: #f8f9fa;">Specs</th>
-                                    <th class="fw-bold text-center" style="background-color: #f8f9fa;">Zamboanga City</th>
-                                    <th class="fw-bold text-center" style="background-color: #f8f9fa;">Zamboanga Sibugay</th>
-                                    <th class="fw-bold text-center" style="background-color: #f8f9fa;">Isabela City</th>
-                                    <th class="fw-bold text-center" style="background-color: #f8f9fa;">Zamboanga Del Sur</th>
-                                    <th class="fw-bold text-center" style="background-color: #f8f9fa;">Zamboanga Del Norte</th>
+                                    
+                                    <?php foreach($provinces as $p): ?>
+                                        <th class="fw-bold text-center" style="background-color: #f8f9fa;"><?= htmlspecialchars($p['province_name']) ?></th>
+                                    <?php endforeach; ?>
                                 </tr>
                             </thead>
                             <tbody id="reportTableBody">
                                 <tr>
-                                    <td colspan="11" class="text-center py-5 text-secondary">
+                                    <td colspan="<?= 6 + count($provinces) ?>" class="text-center py-5 text-secondary">
                                         <i class="bi bi-hourglass-split spin me-2 fs-5"></i> <span class="fw-bold">Loading data...</span>
                                     </td>
                                 </tr>
@@ -413,14 +412,15 @@
         let currentPage = 1;
         let rowsPerPage = 50;
 
-        // CRITICAL FIX: Safe element selection with fallback to prevent JS crashes
+        // DYNAMIC COLUMNS FIX: Supply dynamic province list from PHP to JS
+        const activeProvinces = <?= json_encode($provinces) ?>;
+
         const yearSelect = document.querySelector('select[name="year"]');
         const fYear = yearSelect ? yearSelect.value : '';
 
         const monthSelect = document.querySelector('select[name="month"]');
         const fMonth = monthSelect ? monthSelect.value : '';
 
-        // Safely extract 'week' value even if the HTML element is commented out
         const weekSelect = document.querySelector('select[name="week"]');
         const fWeek = weekSelect ? weekSelect.value : '';
 
@@ -452,7 +452,7 @@
                     })
                     .catch(error => {
                         console.error('Error fetching data:', error);
-                        document.getElementById('reportTableBody').innerHTML = '<tr><td colspan="11" class="text-center py-5 text-danger fw-bold">Error loading data. Check console.</td></tr>';
+                        document.getElementById('reportTableBody').innerHTML = `<tr><td colspan="${6 + activeProvinces.length}" class="text-center py-5 text-danger fw-bold">Error loading data. Check console.</td></tr>`;
                     });
             }
         }
@@ -495,17 +495,11 @@
             let count = start + 1;
             
             if (paginatedItems.length === 0) {
-                html = '<tr><td colspan="11" class="text-center py-5 text-secondary">No data found for this period.</td></tr>';
+                html = `<tr><td colspan="${6 + activeProvinces.length}" class="text-center py-5 text-secondary">No data found for this period.</td></tr>`;
             } else {
                 paginatedItems.forEach(row => {
                     let badgeClass = row.type_code === 'PC' ? 'bg-secondary' : 'bg-primary';
                     
-                    let p1 = formatPriceHTML(row.p1_min, row.p1_max);
-                    let p4 = formatPriceHTML(row.p4_min, row.p4_max);
-                    let p5 = formatPriceHTML(row.p5_min, row.p5_max);
-                    let p2 = formatPriceHTML(row.p2_min, row.p2_max);
-                    let p3 = formatPriceHTML(row.p3_min, row.p3_max);
-
                     let safeCat = row.category_name ? row.category_name.replace(/</g, "&lt;").replace(/>/g, "&gt;") : '';
                     let safeBrand = row.brand_name ? row.brand_name.replace(/</g, "&lt;").replace(/>/g, "&gt;") : '';
                     let safeName = row.product_name ? row.product_name.replace(/</g, "&lt;").replace(/>/g, "&gt;") : '';
@@ -517,13 +511,17 @@
                         <td class="text-secondary text-wrap" style="max-width: 150px;">${safeCat}</td>
                         <td class="fw-bold text-wrap" style="max-width: 180px;">${safeBrand}</td>
                         <td class="text-wrap" style="max-width: 250px;">${safeName}</td>
-                        <td class="text-secondary text-wrap" style="max-width: 200px;">${safeSpecs}</td>
-                        <td class="text-center fw-bold" style="color: #1a7a2e;">${p1}</td>
-                        <td class="text-center fw-bold" style="color: #1a7a2e;">${p4}</td>
-                        <td class="text-center fw-bold" style="color: #1a7a2e;">${p5}</td>
-                        <td class="text-center fw-bold" style="color: #1a7a2e;">${p2}</td>
-                        <td class="text-center fw-bold" style="color: #1a7a2e;">${p3}</td>
-                    </tr>`;
+                        <td class="text-secondary text-wrap" style="max-width: 200px;">${safeSpecs}</td>`;
+                    
+                    // DYNAMIC COLUMNS FIX: Automatically render price loops based on DB provinces
+                    activeProvinces.forEach(prov => {
+                        let p_min = row['p' + prov.id + '_min'];
+                        let p_max = row['p' + prov.id + '_max'];
+                        let pHtml = formatPriceHTML(p_min, p_max);
+                        html += `<td class="text-center fw-bold" style="color: #1a7a2e;">${pHtml}</td>`;
+                    });
+
+                    html += `</tr>`;
                 });
             }
             
@@ -549,7 +547,6 @@
             let form = element.form;
             if (element.name === 'year') {
                 form.month.value = '';
-                // Optional safe null checks
                 if(form.week) form.week.value = '';
             } else if (element.name === 'month') {
                 if(form.week) form.week.value = '';
@@ -679,7 +676,10 @@
 
                         let bnRows = [];
                         let pcRows = [];
-                        let headers = ["#", "Type", "Category", "Brand", "Product Name", "Specs", "Zamboanga City", "Zamboanga Sibugay", "Isabela City", "Zamboanga Del Sur", "Zamboanga Del Norte"];
+                        
+                        // DYNAMIC COLUMNS FIX: Automatically render headers based on DB provinces
+                        let headers = ["#", "Type", "Category", "Brand", "Product Name", "Specs"];
+                        activeProvinces.forEach(prov => { headers.push(prov.province_name); });
                         
                         bnRows.push(headers);
                         pcRows.push(headers);
@@ -694,13 +694,12 @@
                         }
 
                         fullExportData.forEach(row => {
-                            let p1 = rawFmt(row.p1_min, row.p1_max);
-                            let p4 = rawFmt(row.p4_min, row.p4_max);
-                            let p5 = rawFmt(row.p5_min, row.p5_max);
-                            let p2 = rawFmt(row.p2_min, row.p2_max);
-                            let p3 = rawFmt(row.p3_min, row.p3_max);
+                            let r = ["", row.type_code, row.category_name, row.brand_name, row.product_name, row.specifications];
 
-                            let r = ["", row.type_code, row.category_name, row.brand_name, row.product_name, row.specifications, p1, p4, p5, p2, p3];
+                            // DYNAMIC COLUMNS FIX: Loop through each province and grab min/max
+                            activeProvinces.forEach(prov => {
+                                r.push(rawFmt(row['p' + prov.id + '_min'], row['p' + prov.id + '_max']));
+                            });
 
                             if(row.type_code === 'BN') {
                                 r[0] = bnCounter++;

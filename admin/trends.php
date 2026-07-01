@@ -40,7 +40,7 @@
     if (isset($_GET['fetch_ajax_data'])) {
         header('Content-Type: application/json');
         $trendData = [];
-        $marketExtremes = ['lowest' => false, 'highest' => false];
+        $marketExtremes = ['lowest' => false, 'highest' => false, 'itemized' => []];
         if ($filter_variant_id) {
             $trendData = $admin->getTrendData($filter_variant_id, $filter_year, $filter_month, $filter_province);
             $marketExtremes = $admin->getMarketExtremes($filter_variant_id, $filter_year, $filter_month, $filter_province);
@@ -106,6 +106,10 @@
         
         .spin { animation: spin 1s linear infinite; }
         @keyframes spin { 100% { transform: rotate(360deg); } }
+
+        /* Custom Tabs for Itemized Prices */
+        .prov-tabs .nav-link { color: #6c757d; border: none; font-weight: bold; border-bottom: 3px solid transparent; background: transparent; }
+        .prov-tabs .nav-link.active { color: #0A0A3A; border-bottom: 3px solid #0A0A3A; }
     </style>
 </head>
 <body style="background-color: #EAEAEA; overflow-x: hidden;">
@@ -267,6 +271,8 @@
 
                     <div id="marketExtremesContainer"></div>
 
+                    <div id="itemizedPriceContainer" class="mb-4"></div>
+
                     <div class="chart-card w-100">
                         <div class="chart-header flex-column flex-sm-row gap-2">
                             <h6 class="fw-bold m-0 text-dark"><i class="bi bi-graph-up-arrow me-2 text-primary"></i> Price Fluctuation History</h6>
@@ -424,17 +430,14 @@
         function loadTrendData() {
             if (!filter_variant_id) return;
             
-            // 1. Check Browser Memory
             const cachedData = sessionStorage.getItem(cacheKey);
             
             if (cachedData) {
-                // INSTANT LOAD: 0 seconds!
                 const parsed = JSON.parse(cachedData);
                 trendDataRaw = parsed.trendData;
                 marketExtremes = parsed.marketExtremes;
                 renderUI();
             } else {
-                // 2. Fetch from Database once in the background
                 const url = `trends.php?fetch_ajax_data=1&variant_id=${filter_variant_id}&year=${filter_year}&month=${filter_month}&province_id=${filter_province}`;
                 
                 fetch(url)
@@ -442,8 +445,6 @@
                     .then(data => {
                         trendDataRaw = data.trendData;
                         marketExtremes = data.marketExtremes;
-                        
-                        // 3. Save to memory for next time
                         sessionStorage.setItem(cacheKey, JSON.stringify(data));
                         renderUI();
                     })
@@ -453,9 +454,11 @@
             }
         }
 
-        // Render the Extremes Boxes and the Chart.js Canvas
+        // Render the Extremes Boxes, Itemized List, and the Chart.js Canvas
         function renderUI() {
             const extContainer = document.getElementById('marketExtremesContainer');
+            const itemizedContainer = document.getElementById('itemizedPriceContainer');
+
             if (marketExtremes.lowest && marketExtremes.highest) {
                 let lowStores = marketExtremes.lowest.stores || (marketExtremes.lowest.store_name ? marketExtremes.lowest.store_name.split(', ') : []);
                 let highStores = marketExtremes.highest.stores || (marketExtremes.highest.store_name ? marketExtremes.highest.store_name.split(', ') : []);
@@ -503,8 +506,77 @@
                         </div>
                     </div>
                 `;
+
+                // NEW: Render Itemized Store Prices by Province
+                if (marketExtremes.itemized && Object.keys(marketExtremes.itemized).length > 0) {
+                    let tabHeaders = '';
+                    let tabContents = '';
+                    let isFirst = true;
+
+                    for (let provinceName in marketExtremes.itemized) {
+                        let cleanId = provinceName.replace(/[^a-zA-Z0-9]/g, '');
+                        let activeClass = isFirst ? 'active' : '';
+                        let showClass = isFirst ? 'show active' : '';
+
+                        // Create Tab Header
+                        tabHeaders += `
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link ${activeClass}" data-bs-toggle="tab" data-bs-target="#tab-${cleanId}" type="button" role="tab">${provinceName}</button>
+                            </li>
+                        `;
+
+                        // Build table for this province
+                        let tableRows = marketExtremes.itemized[provinceName].map(item => {
+                            let fPrice = Number(item.price).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits:2});
+                            return `
+                                <tr>
+                                    <td class="text-dark">${item.store}</td>
+                                    <td class="text-end fw-bold text-success">₱ ${fPrice}</td>
+                                </tr>
+                            `;
+                        }).join('');
+
+                        // Create Tab Content
+                        tabContents += `
+                            <div class="tab-pane fade ${showClass}" id="tab-${cleanId}" role="tabpanel">
+                                <div class="table-responsive border rounded" style="max-height: 250px; overflow-y: auto;">
+                                    <table class="table table-hover table-sm align-middle mb-0" style="font-size: 0.9rem;">
+                                        <thead class="table-light sticky-top">
+                                            <tr>
+                                                <th class="text-secondary py-2">Store Name</th>
+                                                <th class="text-secondary text-end py-2">Actual Price</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>${tableRows}</tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        `;
+                        isFirst = false;
+                    }
+
+                    itemizedContainer.innerHTML = `
+                        <div class="chart-card">
+                            <div class="bg-light px-3 pt-3 border-bottom">
+                                <h6 class="fw-bold mb-3 text-dark"><i class="bi bi-list-columns-reverse text-primary me-2"></i> Itemized Price Comparison</h6>
+                                <ul class="nav nav-tabs prov-tabs" role="tablist">
+                                    ${tabHeaders}
+                                </ul>
+                            </div>
+                            <div class="p-3">
+                                <div class="tab-content">
+                                    ${tabContents}
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    itemizedContainer.innerHTML = '';
+                }
+
             } else {
                 extContainer.innerHTML = '';
+                itemizedContainer.innerHTML = '';
             }
 
             const chartContainer = document.getElementById('chartContainer');
@@ -613,7 +685,6 @@
             }
         }
 
-        // Fire the loader as soon as the page opens
         document.addEventListener("DOMContentLoaded", loadTrendData);
 
         const selectEl = document.getElementById('productSelect');

@@ -167,6 +167,9 @@
     <div id="part1" class="<?php echo ($part == 1) ? '' : 'd-none'; ?>">
         <div class="d-flex justify-content-between align-items-center mb-4">
             <h4 class="section-title m-0">Upload File</h4>
+            <button class="btn btn-sm btn-primary shadow-sm fw-bold" data-bs-toggle="modal" data-bs-target="#manageProvincesModal">
+                <i class="bi bi-map"></i> Manage Provinces
+            </button>
         </div>
 
         <form id="uploadForm" enctype="multipart/form-data">
@@ -422,7 +425,251 @@
     </div>
 </div>
 
+<div class="modal fade" id="manageProvincesModal" tabindex="-1" aria-hidden="true" style="z-index: 1055;">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content" style="border-radius: 12px; border-top: 5px solid #0A0A3A;">
+            <div class="modal-header border-0 pb-0 px-4 pt-4">
+                <h4 class="modal-title fw-bold" style="color: #0A0A3A;"><i class="bi bi-map me-2"></i>Manage Provinces</h4>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body p-4">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <p class="text-secondary small m-0">View, edit aliases, or add new provinces to the Region IX directory.</p>
+                    <button class="btn btn-sm btn-success fw-bold shadow-sm" data-bs-toggle="modal" data-bs-target="#addProvinceModal">
+                        <i class="bi bi-plus-circle"></i> Add New
+                    </button>
+                </div>
+                
+                <div class="table-responsive border rounded shadow-sm">
+                    <table class="table table-hover align-middle mb-0" style="font-size: 0.9rem;">
+                        <thead class="table-light text-secondary">
+                            <tr>
+                                <th style="width: 50px;">ID</th>
+                                <th>Province Name</th>
+                                <th>Filename Aliases</th>
+                                <th class="text-center" style="width: 100px;">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="provincesTableBody">
+                            </tbody>
+                    </table>
+                </div>
+
+                <div class="d-flex justify-content-between align-items-center mt-3 px-1 gap-2">
+                    <span class="text-secondary fw-bold small" id="provPageInfo">Loading...</span>
+                    <div class="btn-group shadow-sm">
+                        <button type="button" class="btn btn-sm btn-outline-secondary fw-bold" onclick="prevProvPage()" id="provPrevBtn" disabled>Prev</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary fw-bold" onclick="nextProvPage()" id="provNextBtn" disabled>Next</button>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="addProvinceModal" tabindex="-1" aria-hidden="true" style="z-index: 1060;">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content" style="border-radius: 12px; border-top: 5px solid #198754;">
+            <div class="modal-header border-0 pb-0 px-4 pt-4">
+                <h5 class="modal-title fw-bold text-success"><i class="bi bi-plus-circle me-2"></i>Add Province</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body p-4">
+                <form id="addProvinceForm" onsubmit="saveNewProvince(event)">
+                    <div class="mb-3">
+                        <label class="form-label small fw-bold text-secondary">Province Name</label>
+                        <input type="text" id="newProvinceName" class="form-control bg-light" placeholder="e.g. Zamboanga Sibugay" required>
+                    </div>
+                    <div class="mb-4">
+                        <label class="form-label small fw-bold text-secondary">Aliases (Comma-separated)</label>
+                        <input type="text" id="newProvinceAliases" class="form-control bg-light" placeholder="e.g. zamsur, zds, sur">
+                        <div class="form-text small mt-1">These words help the system detect the province from uploaded filenames.</div>
+                    </div>
+                    <div class="d-flex justify-content-end gap-2 pt-2">
+                        <button type="button" class="btn btn-outline-secondary fw-bold px-4 shadow-sm" data-bs-toggle="modal" data-bs-target="#manageProvincesModal">Back</button>
+                        <button type="submit" id="saveProvinceBtn" class="btn btn-success fw-bold px-4 shadow-sm">Save</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="editProvinceModal" tabindex="-1" aria-hidden="true" style="z-index: 1060;">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content" style="border-radius: 12px; border-top: 5px solid #0d6efd;">
+            <div class="modal-header border-0 pb-0 px-4 pt-4">
+                <h5 class="modal-title fw-bold text-primary"><i class="bi bi-pencil-square me-2"></i>Edit Province</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body p-4">
+                <form id="editProvinceForm" onsubmit="updateProvince(event)">
+                    <input type="hidden" id="editProvinceId">
+                    <div class="mb-3">
+                        <label class="form-label small fw-bold text-secondary">Province Name</label>
+                        <input type="text" id="editProvinceName" class="form-control bg-light" required>
+                    </div>
+                    <div class="mb-4">
+                        <label class="form-label small fw-bold text-secondary">Aliases (Comma-separated)</label>
+                        <input type="text" id="editProvinceAliases" class="form-control bg-light">
+                    </div>
+                    <div class="d-flex justify-content-end gap-2 pt-2">
+                        <button type="button" class="btn btn-outline-secondary fw-bold px-4 shadow-sm" data-bs-toggle="modal" data-bs-target="#manageProvincesModal">Cancel</button>
+                        <button type="submit" id="updateProvinceBtn" class="btn btn-primary fw-bold px-4 shadow-sm">Update</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
+    // =======================================================================
+    // NEW: MANAGE PROVINCES PAGINATION & LOGIC
+    // =======================================================================
+    let manageProvincesData = <?= json_encode($provinces) ?>;
+    let currentProvPage = 1;
+    const provRowsPerPage = 5;
+
+    function escapeHtml(text) {
+        if (!text) return '';
+        const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+        return text.toString().replace(/[&<>"']/g, function(m) { return map[m]; });
+    }
+
+    function renderProvincesTable() {
+        let tbody = document.getElementById('provincesTableBody');
+        if (!tbody) return;
+
+        let start = (currentProvPage - 1) * provRowsPerPage;
+        let end = start + provRowsPerPage;
+        let paginatedItems = manageProvincesData.slice(start, end);
+
+        let html = '';
+
+        if (paginatedItems.length === 0) {
+            html = '<tr><td colspan="4" class="text-center py-4 text-secondary">No provinces found.</td></tr>';
+        } else {
+            paginatedItems.forEach(p => {
+                let aliasesDisplay = p.aliases ? escapeHtml(p.aliases) : '<span class="text-muted">None</span>';
+                
+                // Securely pass variables to the onclick handler
+                let safeName = escapeHtml(p.province_name).replace(/'/g, "\\'");
+                let safeAliases = p.aliases ? escapeHtml(p.aliases).replace(/'/g, "\\'") : '';
+                
+                html += `
+                    <tr>
+                        <td class="fw-bold text-secondary">${p.id}</td>
+                        <td class="fw-bold text-dark">${escapeHtml(p.province_name)}</td>
+                        <td class="text-secondary fst-italic">${aliasesDisplay}</td>
+                        <td class="text-center">
+                            <div class="btn-group shadow-sm">
+                                <button type="button" class="btn btn-sm btn-outline-primary fw-bold" onclick="openEditProvinceModal(${p.id}, '${safeName}', '${safeAliases}')">
+                                    <i class="bi bi-pencil-square"></i>
+                                </button>
+                                <button type="button" class="btn btn-sm btn-outline-danger fw-bold" onclick="deleteProvince(${p.id})">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            });
+        }
+
+        tbody.innerHTML = html;
+        updateProvPaginationInfo();
+    }
+
+    function updateProvPaginationInfo() {
+        let total = manageProvincesData.length;
+        let start = total === 0 ? 0 : ((currentProvPage - 1) * provRowsPerPage) + 1;
+        let end = Math.min(currentProvPage * provRowsPerPage, total);
+
+        document.getElementById('provPageInfo').innerText = `Showing ${start} to ${end} of ${total}`;
+        document.getElementById('provPrevBtn').disabled = currentProvPage === 1;
+        document.getElementById('provNextBtn').disabled = end >= total;
+    }
+
+    function prevProvPage() { if (currentProvPage > 1) { currentProvPage--; renderProvincesTable(); } }
+    function nextProvPage() { if (currentProvPage * provRowsPerPage < manageProvincesData.length) { currentProvPage++; renderProvincesTable(); } }
+
+    async function saveNewProvince(e) {
+        e.preventDefault();
+        const btn = document.getElementById('saveProvinceBtn');
+        const origText = btn.innerText;
+        btn.innerText = "Saving..."; btn.disabled = true;
+
+        let fd = new FormData();
+        fd.append('action', 'add_province');
+        fd.append('province_name', document.getElementById('newProvinceName').value);
+        fd.append('aliases', document.getElementById('newProvinceAliases').value);
+
+        try {
+            let res = await fetch('ajax_handler.php', { method: 'POST', body: fd });
+            let data = await res.json();
+            if(data.status === 'success') {
+                location.reload(); 
+            } else {
+                alert("Error: " + data.message);
+                btn.innerText = origText; btn.disabled = false;
+            }
+        } catch(err) { alert("Connection error."); btn.innerText = origText; btn.disabled = false; }
+    }
+
+    function openEditProvinceModal(id, name, aliases) {
+        document.getElementById('editProvinceId').value = id;
+        document.getElementById('editProvinceName').value = name;
+        document.getElementById('editProvinceAliases').value = aliases;
+        new bootstrap.Modal(document.getElementById('editProvinceModal')).show();
+    }
+
+    async function updateProvince(e) {
+        e.preventDefault();
+        const btn = document.getElementById('updateProvinceBtn');
+        const origText = btn.innerText;
+        btn.innerText = "Updating..."; btn.disabled = true;
+
+        let fd = new FormData();
+        fd.append('action', 'edit_province');
+        fd.append('province_id', document.getElementById('editProvinceId').value);
+        fd.append('province_name', document.getElementById('editProvinceName').value);
+        fd.append('aliases', document.getElementById('editProvinceAliases').value);
+
+        try {
+            let res = await fetch('ajax_handler.php', { method: 'POST', body: fd });
+            let data = await res.json();
+            if(data.status === 'success') {
+                location.reload(); 
+            } else {
+                alert("Error: " + data.message);
+                btn.innerText = origText; btn.disabled = false;
+            }
+        } catch(err) { alert("Connection error."); btn.innerText = origText; btn.disabled = false; }
+    }
+
+    function deleteProvince(id) {
+        showConfirmModal('Delete Province', 'Are you sure you want to delete this province? This action cannot be undone and will fail if price records are currently linked to it.', 'danger', '<i class="bi bi-trash"></i> Delete', async function() {
+            let fd = new FormData();
+            fd.append('action', 'delete_province');
+            fd.append('province_id', id);
+            
+            try {
+                let res = await fetch('ajax_handler.php', { method: 'POST', body: fd });
+                let data = await res.json();
+                if(data.status === 'success') {
+                    location.reload(); 
+                } else alert("Error: " + data.message); 
+            } catch(err) { alert("Connection failed."); }
+        });
+    }
+
+    // Initialize Modal Table on load
+    document.addEventListener("DOMContentLoaded", () => {
+        renderProvincesTable();
+    });
+
     // =======================================================================
     // CACHING LOGIC FOR PROVINCIAL SUMMARY (PART 3)
     // =======================================================================
@@ -469,7 +716,6 @@
         }
     }
 
-    // Initiate Data Summary Loader
     document.addEventListener("DOMContentLoaded", () => {
         if (currentPart == 3) loadProvincialData();
     });
@@ -521,7 +767,7 @@
                 .catch(error => {
                     console.error("Preview Fetch Error:", error);
                     document.getElementById('previewAlertContainer').innerHTML = `<div class="alert alert-danger mb-0"><i class="bi bi-exclamation-triangle-fill me-2"></i> Failed to load Excel preview. Error: ${error.message}</div>`;
-                    document.getElementById('previewTableBody').innerHTML = ''; // Clear spinner
+                    document.getElementById('previewTableBody').innerHTML = ''; 
                 });
         }
     }
@@ -534,13 +780,11 @@
             return;
         }
 
-        // Build Sheet Buttons
         if (data.sheets && data.sheets.length > 1) {
             let sheetHtml = `<span class="fw-bold text-secondary me-3"><i class="bi bi-layers"></i> Select Sheet:</span>`;
             data.sheets.forEach(sheet => {
                 let isCurrent = (data.current_sheet === sheet);
                 let btnClass = isCurrent ? 'btn-primary shadow-sm' : 'btn-outline-secondary';
-                // Update URL via pushState so refreshing works
                 sheetHtml += `<button onclick="window.location.href='provincial.php?part=2&file_id=${pFileId}&sheet=${encodeURIComponent(sheet)}'" class="btn btn-sm ${btnClass} fw-bold me-2 px-3">${sheet}</button>`;
             });
             let sContainer = document.getElementById('sheetButtonsContainer');
@@ -565,12 +809,21 @@
 
             let headerData = rawPreviewData[hRow];
             let maxCol = -1;
+            
             for(let c=0; c < headerData.length; c++) {
-                let header = (headerData[c] || "").toString().toUpperCase();
+                let header = (headerData[c] || "").toString().toUpperCase().trim();
+                if(!header) continue;
+                
                 if(header.includes("SRP") || header.includes("SUGGESTED")) srpCol = c;
-                if(header.includes("TYPE") || header.includes("CATEGO") || header.includes("COMMODITY") || header.includes("PRODUCT") || header.includes("BRAND") || header.includes("SPEC")) {
+                
+                if(header === "BRAND" || (header.includes("BRAND") && !header.includes("SPEC"))) {
+                    if (c > maxCol) maxCol = c;
+                } else if(header === "SPECIFICATIONS" || header.includes("SPEC") || header.includes("WEIGHT") || header.includes("SIZE") || header.includes("UNIT")) {
+                    if (c > maxCol) maxCol = c;
+                } else if(header.includes("TYPE") || header.includes("CATEGO") || header.includes("COMMODITY") || header.includes("PRODUCT")) {
                     if (c > maxCol) maxCol = c;
                 }
+                
                 if(header.includes("SRP") && c > maxCol) maxCol = c;
             }
             storeStartCol = maxCol !== -1 ? maxCol + 1 : 6;
@@ -586,8 +839,6 @@
         renderPreviewTable();
     }
 
-
-    // Initiate Loaders immediately
     document.addEventListener("DOMContentLoaded", () => {
         if (currentPart == 2) loadPreviewData();
     });
@@ -850,7 +1101,6 @@
                 let res = await fetch('ajax_handler.php', { method: 'POST', body: fd });
                 let data = await res.json();
                 if(data.status === 'success') {
-                    // CRITICAL FIX: The database changed, so we must delete the old memory cache!
                     sessionStorage.removeItem('products_masterlist_cache');
                     sessionStorage.removeItem('movement_log_cache');
                     Object.keys(sessionStorage).forEach(key => {
@@ -945,9 +1195,8 @@
         let file = e.target.files[0];
         if(!file) return;
 
-        uploadStartTime = Date.now(); // Start silent background timer
+        uploadStartTime = Date.now(); 
 
-        // Trigger the screen-locking modal
         const progressModal = new bootstrap.Modal(document.getElementById('uploadProgressModal'));
         progressModal.show();
         
@@ -1090,18 +1339,26 @@
 
                         let colMap = { type: -1, cat: -1, prod: -1, brand: -1, specs: -1, srp: -1 };
                         let maxCol = -1;
-                        
                         let headerLimit = Math.min(jData[hRow].length, 50); 
                         
                         for(let c=0; c < headerLimit; c++) {
-                            let header = (jData[hRow][c] || "").toString().toUpperCase();
+                            let rawHeader = (jData[hRow][c] || "").toString();
+                            let header = rawHeader.toUpperCase().replace(/\r?\n|\r/g, " ").trim();
                             if(!header) continue;
-                            if(header.includes("TYPE") && !header.includes("COMMODITY")) colMap.type = c;
-                            else if(header.includes("CATEGO")) colMap.cat = c;
-                            else if(header.includes("COMMODITY") || header.includes("PRODUCT")) colMap.prod = c;
-                            else if(header.includes("BRAND")) colMap.brand = c;
-                            else if(header.includes("SPEC")) colMap.specs = c;
-                            else if(header.includes("SRP") || header.includes("SUGGESTED")) colMap.srp = c;
+                            
+                            if(header === "TYPE") { colMap.type = c; continue; }
+                            if(header === "CATEGORY" || header === "CATEGORIES") { colMap.cat = c; continue; }
+                            if(header === "COMMODITY" || header === "PRODUCT" || header === "PRODUCT NAME" || header === "BASIC NECESSITIES" || header === "PRIME COMMODITIES" || header === "ITEMS") { colMap.prod = c; continue; }
+                            if(header === "BRAND" || header === "BRAND NAME" || header === "BRANDS") { colMap.brand = c; continue; }
+                            if(header === "SPECIFICATION" || header === "SPECIFICATIONS" || header === "WEIGHT" || header === "SIZE" || header === "WEIGHT/SPECIFICATION" || header === "WEIGHT / SPECIFICATION" || header === "UNIT/SPECIFICATION" || header === "UNIT / SPECIFICATION") { colMap.specs = c; continue; }
+                            if(header === "SRP" || header === "SUGGESTED RETAIL PRICE" || header === "PREV SRP") { colMap.srp = c; continue; }
+                            
+                            if(colMap.type === -1 && header.includes("TYPE") && !header.includes("COMMODITY")) colMap.type = c;
+                            else if(colMap.cat === -1 && header.includes("CATEGO")) colMap.cat = c;
+                            else if(colMap.prod === -1 && (header.includes("COMMODITY") || (header.includes("PRODUCT") && !header.includes("SPEC") && !header.includes("BRAND")))) colMap.prod = c;
+                            else if(colMap.specs === -1 && (header.includes("SPEC") || header.includes("WEIGHT") || header.includes("SIZE"))) colMap.specs = c;
+                            else if(colMap.brand === -1 && header.includes("BRAND") && !header.includes("SPEC")) colMap.brand = c;
+                            else if(colMap.srp === -1 && (header.includes("SRP") || header.includes("SUGGESTED"))) colMap.srp = c;
                         }
                         
                         if (colMap.prod === -1) colMap.prod = 2; 
@@ -1359,8 +1616,5 @@
 </script>
 
 <?php 
-// -------------------------------------------------------------
-// PULL IN THE MASTER FOOTER (Modals and Global Scripts)
-// -------------------------------------------------------------
 include '../includes/footer.php'; 
 ?>

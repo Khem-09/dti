@@ -15,17 +15,39 @@ error_reporting(E_ALL);
 ini_set('display_errors', 0); 
 ob_start(); 
 
+function ensureProductHistoryTable($conn) {
+    $conn->exec("CREATE TABLE IF NOT EXISTS product_history (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        variant_id INT,
+        old_name VARCHAR(255),
+        new_name VARCHAR(255),
+        old_specs VARCHAR(255),
+        new_specs VARCHAR(255),
+        old_srp DECIMAL(10,2),
+        new_srp DECIMAL(10,2),
+        changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )");
+    
+    $columns = [
+        "old_name VARCHAR(255)", "new_name VARCHAR(255)", 
+        "old_specs VARCHAR(255)", "new_specs VARCHAR(255)", 
+        "old_srp DECIMAL(10,2)", "new_srp DECIMAL(10,2)", 
+        "changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+    ];
+    foreach($columns as $col) {
+        try { $conn->exec("ALTER TABLE product_history ADD COLUMN $col"); } catch(Exception $e) { }
+    }
+}
+
 try {
     $database = new Database();
     $conn = $database->getConnection();
 
     // =========================================================================================
-    // EXPORT COMPLIANCE REPORT EXCEL (Uses PhpSpreadsheet to retain SRP text colors)
+    // EXPORT COMPLIANCE REPORT EXCEL
     // =========================================================================================
     if (isset($_GET['action']) && $_GET['action'] === 'export_compliance_excel') {
-        while (ob_get_level() > 0) {
-            ob_end_clean();
-        }
+        while (ob_get_level() > 0) ob_end_clean();
         
         $c_province = $_GET['c_province'] ?? '';
         $c_year = $_GET['c_year'] ?? date('Y');
@@ -56,12 +78,8 @@ try {
         $records = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
-        
-        $wsBN = $spreadsheet->getActiveSheet();
-        $wsBN->setTitle('Basic Necessities');
-
-        $wsPC = $spreadsheet->createSheet();
-        $wsPC->setTitle('Prime Commodities');
+        $wsBN = $spreadsheet->getActiveSheet(); $wsBN->setTitle('Basic Necessities');
+        $wsPC = $spreadsheet->createSheet(); $wsPC->setTitle('Prime Commodities');
 
         $headers = ['Date / Period', 'Type', 'Category', 'Brand', 'Product Name', 'Specs', 'Store Name', 'SRP (₱)', 'Actual Price (₱)', 'Variance (₱)', 'Status'];
         
@@ -73,41 +91,26 @@ try {
         $wsPC->getStyle('A1:K1')->getFont()->setBold(true);
         $wsPC->getStyle('A1:K1')->getFill()->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)->getStartColor()->setARGB('FFD3D3D3');
 
-        $bnRowNum = 2;
-        $pcRowNum = 2;
+        $bnRowNum = 2; $pcRowNum = 2;
 
         foreach ($records as $row) {
             $dateStr = !empty($row['date_range_label']) ? $row['date_range_label'] : "W{$row['week_number']} {$row['month']} {$row['year']}";
-            $srp = $row['srp'];
-            $actual = $row['actual_price'];
-            
-            $variance = '';
-            $status = '';
-            $color = 'FF000000'; 
+            $srp = $row['srp']; $actual = $row['actual_price'];
+            $variance = ''; $status = ''; $color = 'FF000000'; 
 
             if (empty($srp) || $srp <= 0) {
-                $status = 'No SRP';
-                $variance = 'N/A';
+                $status = 'No SRP'; $variance = 'N/A';
             } else {
                 $varVal = $actual - $srp;
                 $variance = ($varVal > 0 ? '+' : '') . number_format($varVal, 2);
-                if ($actual > $srp) {
-                    $status = 'Non-Compliant (Overpriced)';
-                    $color = 'FFFF0000'; 
-                } else {
-                    $status = 'Compliant';
-                    $color = 'FF008000'; 
-                }
+                if ($actual > $srp) { $status = 'Non-Compliant (Overpriced)'; $color = 'FFFF0000'; } 
+                else { $status = 'Compliant'; $color = 'FF008000'; }
             }
 
             if (isset($row['type_code']) && ($row['type_code'] === 'BN' || strpos(strtoupper($row['type_name']), 'BASIC') !== false)) {
-                $ws = $wsBN;
-                $rowNum = $bnRowNum;
-                $bnRowNum++;
+                $ws = $wsBN; $rowNum = $bnRowNum; $bnRowNum++;
             } else {
-                $ws = $wsPC;
-                $rowNum = $pcRowNum;
-                $pcRowNum++;
+                $ws = $wsPC; $rowNum = $pcRowNum; $pcRowNum++;
             }
 
             $ws->setCellValueExplicit('A'.$rowNum, $dateStr, \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING);
@@ -121,7 +124,6 @@ try {
             $ws->setCellValueExplicit('I'.$rowNum, number_format($actual, 2), \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING);
             $ws->setCellValueExplicit('J'.$rowNum, $variance, \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING);
             $ws->setCellValue('K'.$rowNum, $status);
-
             $ws->getStyle("I{$rowNum}:K{$rowNum}")->getFont()->getColor()->setARGB($color);
         }
 
@@ -131,18 +133,13 @@ try {
         }
 
         $spreadsheet->setActiveSheetIndex(0);
-
-        while (ob_get_level() > 0) {
-            ob_end_clean();
-        }
+        while (ob_get_level() > 0) ob_end_clean();
         
         try {
             $provStmt = $conn->prepare("SELECT province_name FROM provinces WHERE id = ?");
             $provStmt->execute([$c_province]);
             $provName = $provStmt->fetchColumn();
-        } catch (Exception $e) {
-            $provName = null;
-        }
+        } catch (Exception $e) { $provName = null; }
 
         $provLabel = !empty($provName) ? $provName : $c_province;
         $provLabel = preg_replace('/[^A-Za-z0-9]/', '_', $provLabel);
@@ -160,10 +157,7 @@ try {
     // EXPORT COLORED EXCEL PREVIEW
     // =========================================================================================
     if (isset($_GET['action']) && $_GET['action'] === 'export_colored_preview') {
-        
-        while (ob_get_level() > 0) {
-            ob_end_clean();
-        }
+        while (ob_get_level() > 0) ob_end_clean();
         
         $file_id = $_GET['file_id'];
         $sheet_name = $_GET['sheet'] ?? null;
@@ -172,13 +166,9 @@ try {
         $stmt->execute([$file_id]);
         $filename = $stmt->fetchColumn();
 
-        if (!$filename) { 
-            die("File not found in database."); 
-        }
+        if (!$filename) die("File not found in database."); 
         $filePath = "../uploads/" . $filename;
-        if (!file_exists($filePath)) { 
-            die("File missing from server uploads folder."); 
-        }
+        if (!file_exists($filePath)) die("File missing from server uploads folder."); 
 
         try {
             $inputFileType = \PhpOffice\PhpSpreadsheet\IOFactory::identify($filePath);
@@ -195,9 +185,7 @@ try {
             $highestColumn = $worksheet->getHighestColumn();
             $highestColumnIndex = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::columnIndexFromString($highestColumn);
 
-            $hRow = -1;
-            $srpCol = -1;
-            $storeStartCol = -1;
+            $hRow = -1; $srpCol = -1; $storeStartCol = -1;
 
             for ($r = 1; $r <= min(30, $highestRow); $r++) {
                 $rowStr = "";
@@ -207,8 +195,7 @@ try {
                     $rowStr .= " " . strtoupper((string)$val);
                 }
                 if (strpos($rowStr, "COMMODITY") !== false || strpos($rowStr, "BRAND") !== false || strpos($rowStr, "SPECIFICATION") !== false) {
-                    $hRow = $r;
-                    break;
+                    $hRow = $r; break;
                 }
             }
 
@@ -218,9 +205,7 @@ try {
                     $colLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($c);
                     $header = strtoupper((string)$worksheet->getCell($colLetter . $hRow)->getValue());
                     
-                    if (strpos($header, "SRP") !== false || strpos($header, "SUGGESTED") !== false) {
-                        $srpCol = $c;
-                    }
+                    if (strpos($header, "SRP") !== false || strpos($header, "SUGGESTED") !== false) $srpCol = $c;
                     if (strpos($header, "TYPE") !== false || strpos($header, "CATEGO") !== false || strpos($header, "COMMODITY") !== false || strpos($header, "PRODUCT") !== false || strpos($header, "BRAND") !== false || strpos($header, "SPEC") !== false) {
                         if ($c > $maxCol) $maxCol = $c;
                     }
@@ -230,7 +215,6 @@ try {
 
                 if ($srpCol !== -1) {
                     $srpColLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($srpCol);
-                    
                     for ($r = $hRow + 1; $r <= $highestRow; $r++) {
                         $srpVal = $worksheet->getCell($srpColLetter . $r)->getValue(); 
                         $srpRaw = (float)preg_replace('/[^0-9.]/', '', (string)$srpVal);
@@ -239,21 +223,16 @@ try {
                             for ($c = $storeStartCol; $c <= $highestColumnIndex; $c++) {
                                 $colLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($c);
                                 
-                                $row1 = $hRow;
-                                $row2 = max(1, $hRow - 1);
-                                $row3 = max(1, $hRow - 2);
+                                $row1 = $hRow; $row2 = max(1, $hRow - 1); $row3 = max(1, $hRow - 2);
                                 
                                 $colHead1 = strtoupper((string)$worksheet->getCell($colLetter . $row1)->getValue());
                                 $colHead2 = strtoupper((string)$worksheet->getCell($colLetter . $row2)->getValue());
                                 $colHead3 = strtoupper((string)$worksheet->getCell($colLetter . $row3)->getValue());
                                 $combinedHead = $colHead1 . " " . $colHead2 . " " . $colHead3;
                                 
-                                if (strpos($combinedHead, "MIN") !== false || strpos($combinedHead, "MAX") !== false || strpos($combinedHead, "AVERAGE") !== false || strpos($combinedHead, "MODE") !== false || strpos($combinedHead, "NAN") !== false) {
-                                    continue;
-                                }
+                                if (strpos($combinedHead, "MIN") !== false || strpos($combinedHead, "MAX") !== false || strpos($combinedHead, "AVERAGE") !== false || strpos($combinedHead, "MODE") !== false || strpos($combinedHead, "NAN") !== false) continue;
 
                                 $cellVal = (string)$worksheet->getCell($colLetter . $r)->getValue();
-                                
                                 if (strpos(strtoupper($cellVal), "PRICE FREEZE") !== false) continue;
 
                                 if (trim($cellVal) !== "") {
@@ -281,13 +260,9 @@ try {
             $writer = \PhpOffice\PhpSpreadsheet\IOFactory::createWriter($spreadsheet, 'Xlsx');
             $writer->save('php://output');
             exit();
-        } catch (Exception $e) {
-            die("Error generating colored Excel file: " . $e->getMessage());
-        }
+        } catch (Exception $e) { die("Error generating colored Excel file: " . $e->getMessage()); }
     }
 
-
-    // Password Verification Only (For Secure Backup Auth)
     if (isset($_POST['action']) && $_POST['action'] === 'verify_password_only') {
         if (!isset($_SESSION['admin_id'])) {
             ob_end_clean(); echo json_encode(['status' => 'error', 'message' => 'Unauthorized']); exit();
@@ -307,7 +282,6 @@ try {
         exit();
     }
 
-    // Download Database Backup Logic
     if (isset($_GET['action']) && $_GET['action'] === 'download_backup') {
         header('Content-Type: application/octet-stream');
         header('Content-Disposition: attachment; filename="DTI_Database_Backup_' . date('Ymd_His') . '.sql"');
@@ -335,6 +309,59 @@ try {
 
     // FROM HERE ON, RESPONSES ARE JSON
     header('Content-Type: application/json');
+
+    // UPGRADED: ADD PROVINCE LOGIC (Now Accepts Aliases)
+    if (isset($_POST['action']) && $_POST['action'] === 'add_province') {
+        $province_name = trim($_POST['province_name'] ?? '');
+        $aliases = trim($_POST['aliases'] ?? '');
+        
+        if (empty($province_name)) {
+            ob_end_clean(); echo json_encode(['status' => 'error', 'message' => 'Province name cannot be empty.']); exit();
+        }
+        try {
+            require_once '../classes/admin.php';
+            $adminClass = new Admin($conn);
+            $adminClass->addProvince($province_name, $aliases);
+            ob_end_clean(); echo json_encode(['status' => 'success']);
+        } catch (Exception $e) {
+            ob_end_clean(); echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+        }
+        exit();
+    }
+
+    // NEW: EDIT PROVINCE LOGIC
+    if (isset($_POST['action']) && $_POST['action'] === 'edit_province') {
+        $id = $_POST['province_id'] ?? 0;
+        $province_name = trim($_POST['province_name'] ?? '');
+        $aliases = trim($_POST['aliases'] ?? '');
+        
+        if (empty($province_name) || empty($id)) {
+            ob_end_clean(); echo json_encode(['status' => 'error', 'message' => 'Invalid data provided.']); exit();
+        }
+        try {
+            require_once '../classes/admin.php';
+            $adminClass = new Admin($conn);
+            $adminClass->updateProvince($id, $province_name, $aliases);
+            ob_end_clean(); echo json_encode(['status' => 'success']);
+        } catch (Exception $e) {
+            ob_end_clean(); echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+        }
+        exit();
+    }
+
+    // NEW: DELETE PROVINCE LOGIC
+    if (isset($_POST['action']) && $_POST['action'] === 'delete_province') {
+        $id = $_POST['province_id'] ?? 0;
+        try {
+            require_once '../classes/admin.php';
+            $adminClass = new Admin($conn);
+            $adminClass->deleteProvince($id);
+            ob_end_clean(); echo json_encode(['status' => 'success']);
+        } catch (Exception $e) {
+            ob_end_clean(); echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
+        }
+        exit();
+    }
 
     if (isset($_POST['action']) && $_POST['action'] === 'update_admin_profile') {
         if (!isset($_SESSION['admin_id'])) {
@@ -378,13 +405,41 @@ try {
         exit();
     }
 
-    function detectProvinceId($filename, $fallback_id) {
+    // UPGRADED: detectProvinceId now scans the database aliases dynamically!
+    function detectProvinceId($conn, $filename, $fallback_id) {
         $name = strtolower(str_replace(['_', '-'], ' ', $filename));
+        
+        try {
+            // First check the database for exact names or alias matches
+            $stmt = $conn->query("SELECT id, province_name, aliases FROM provinces");
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $provNameLower = strtolower(trim($row['province_name']));
+                
+                // Check exact name match
+                if (strpos($name, $provNameLower) !== false) {
+                    return $row['id'];
+                }
+                
+                // Check alias matches
+                if (!empty($row['aliases'])) {
+                    $aliases = explode(',', $row['aliases']);
+                    foreach ($aliases as $alias) {
+                        $alias = strtolower(trim($alias));
+                        if (!empty($alias) && strpos($name, $alias) !== false) {
+                            return $row['id'];
+                        }
+                    }
+                }
+            }
+        } catch (Exception $e) {}
+
+        // Fallback hardcoded shortcuts just in case the database check fails or aliases aren't set
         if (strpos($name, 'zamcity') !== false || strpos($name, 'zamboanga city') !== false || strpos($name, 'city') !== false || strpos($name, 'zc') !== false) return 1;
         if (strpos($name, 'zamsur') !== false || strpos($name, 'del sur') !== false || strpos($name, 'zds') !== false) return 2;
         if (strpos($name, 'zamnorte') !== false || strpos($name, 'del norte') !== false || strpos($name, 'zdn') !== false) return 3;
         if (strpos($name, 'sibugay') !== false || strpos($name, 'zamsib') !== false || strpos($name, 'zs' ) !== false || strpos($name, 'ipil') !== false) return 4;
         if (strpos($name, 'isabela') !== false || strpos($name, 'ic') !== false) return 5;
+
         return !empty($fallback_id) ? $fallback_id : 1; 
     }
 
@@ -399,7 +454,7 @@ try {
         
         $target_year = !empty($_POST['target_year']) ? $_POST['target_year'] : null;
         
-        $final_province_id = detectProvinceId($original_filename, $fallback_province);
+        $final_province_id = detectProvinceId($conn, $original_filename, $fallback_province);
         
         $clean_filename = time() . "_" . preg_replace("/[^a-zA-Z0-9.\-_]/", "", $original_filename);
         $target_file = $target_dir . $clean_filename;
@@ -421,7 +476,6 @@ try {
         exit();
     }
 
-    // FIX: Add endpoint to properly mark the file's 'finished_at' timestamp once all chunks complete
     if (isset($_POST['action']) && $_POST['action'] === 'mark_file_finished') {
         $file_id = $_POST['file_id'];
         $stmt = $conn->prepare("UPDATE uploaded_files SET finished_at = CURRENT_TIMESTAMP WHERE id = ?");
@@ -483,8 +537,15 @@ try {
             $rtype = 'Regional';
             $rname = "Region IX Complete Summary";
 
-            $allData = $adminClass->getRegionalReport($year, null, null, 'All');
-            $headers = ["#", "Type", "Category", "Brand", "Product Name", "Specs", "Zamboanga City", "Zamboanga Sibugay", "Isabela City", "Zamboanga Del Sur", "Zamboanga Del Norte"];
+            $regionalOutput = $adminClass->getRegionalReport($year, null, null, 'All');
+            $allData = $regionalOutput['data'];
+            $allProvinces = $regionalOutput['provinces'];
+
+            $headers = ["#", "Type", "Category", "Brand", "Product Name", "Specs"];
+            foreach ($allProvinces as $dp) {
+                $headers[] = $dp['province_name'];
+            }
+            
             $bnRows[] = $headers; $pcRows[] = $headers;
             $bnC = 1; $pcC = 1;
 
@@ -494,13 +555,12 @@ try {
                     return ($min == $max) ? "PHP " . number_format($min, 2) : "PHP " . number_format($min, 2) . " - " . number_format($max, 2);
                 };
 
-                $p1 = $fmt($row['p1_min'], $row['p1_max']);
-                $p4 = $fmt($row['p4_min'], $row['p4_max']);
-                $p5 = $fmt($row['p5_min'], $row['p5_max']);
-                $p2 = $fmt($row['p2_min'], $row['p2_max']);
-                $p3 = $fmt($row['p3_min'], $row['p3_max']);
+                $r = ["", $row['type_code'], $row['category_name'], $row['brand_name'], $row['product_name'], $row['specifications']];
+                
+                foreach ($allProvinces as $dp) {
+                    $r[] = $fmt($row['p'.$dp['id'].'_min'], $row['p'.$dp['id'].'_max']);
+                }
 
-                $r = ["", $row['type_code'], $row['category_name'], $row['brand_name'], $row['product_name'], $row['specifications'], $p1, $p4, $p5, $p2, $p3];
                 if ($row['type_code'] == 'BN') { $r[0] = $bnC++; $bnRows[] = $r; } 
                 else { $r[0] = $pcC++; $pcRows[] = $r; }
             }
@@ -554,10 +614,8 @@ try {
         $province_id = $request['province_id'];
         $chunk = $request['data'];
         
-        // FIX: Capture the srp_date_label sent from JS
         $srp_date_label = $request['srp_date_label'] ?? null;
 
-        // Auto-create column if missing to prevent crash
         try {
             $conn->query("SELECT srp_date_label FROM uploaded_files LIMIT 1");
         } catch (Exception $e) {
@@ -578,7 +636,6 @@ try {
         try {
             $stores = []; $periods = []; $types = []; $cats = []; $brands = []; $prods = []; $variants = [];
 
-            // FIX: Array mappings are strictly lowercased to prevent PHP array-misses creating MySQL Duplicate Key crashes
             $stmt = $conn->prepare("SELECT id, store_name FROM stores WHERE province_id = ?");
             $stmt->execute([$province_id]);
             while($r = $stmt->fetch(PDO::FETCH_ASSOC)) $stores[strtolower(trim($r['store_name']))] = $r['id'];
@@ -601,7 +658,6 @@ try {
             $stmt = $conn->query("SELECT id, product_id, specifications FROM product_variants");
             while($r = $stmt->fetch(PDO::FETCH_ASSOC)) $variants[$r['product_id'].'~_~'.strtolower(trim($r['specifications']))] = $r['id'];
 
-            // FIX: Added 'IGNORE' to all INSERT statements to gracefully handle existing data races
             $insStore = $conn->prepare("INSERT IGNORE INTO stores (store_name, province_id) VALUES (?, ?)");
             $insPeriod = $conn->prepare("INSERT IGNORE INTO monitoring_periods (year, month, week_number, date_range_label) VALUES (?, ?, ?, ?)");
             $insType = $conn->prepare("INSERT IGNORE INTO commodity_types (type_code, type_name) VALUES (?, ?)");
@@ -642,7 +698,6 @@ try {
                 $srp        = $row['srp'];
                 $price      = $row['price'];
 
-                // FIX: Retrieve IDs safely even if the INSERT was ignored due to preexisting data
                 if(!isset($stores[$store_key])) { 
                     $insStore->execute([$store_name, $province_id]); 
                     $newId = $conn->lastInsertId();
@@ -794,23 +849,13 @@ try {
         $new_specs = trim($_POST['specifications']);
         $new_srp = !empty($_POST['srp']) ? $_POST['srp'] : null;
 
+        ensureProductHistoryTable($conn);
+
         $stmt = $conn->prepare("SELECT p.product_name, pv.specifications, pv.srp FROM product_variants pv JOIN products p ON pv.product_id = p.id WHERE pv.id = ?");
         $stmt->execute([$variant_id]);
         $old = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if ($old) {
-            $conn->exec("CREATE TABLE IF NOT EXISTS product_history (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                variant_id INT,
-                old_name VARCHAR(255),
-                new_name VARCHAR(255),
-                old_specs VARCHAR(255),
-                new_specs VARCHAR(255),
-                old_srp DECIMAL(10,2),
-                new_srp DECIMAL(10,2),
-                changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )");
-
             if ($old['product_name'] != $new_name || $old['specifications'] != $new_specs || $old['srp'] != $new_srp) {
                 $histStmt = $conn->prepare("INSERT INTO product_history (variant_id, old_name, new_name, old_specs, new_specs, old_srp, new_srp) VALUES (?, ?, ?, ?, ?, ?, ?)");
                 $histStmt->execute([
@@ -841,6 +886,7 @@ try {
         $specifications = trim($_POST['specifications']);
         $srp = !empty($_POST['srp']) ? $_POST['srp'] : null;
 
+        ensureProductHistoryTable($conn);
         $conn->beginTransaction();
 
         try {
@@ -888,13 +934,24 @@ try {
 
             $insVar = $conn->prepare("INSERT INTO product_variants (product_id, specifications, srp) VALUES (?, ?, ?)");
             $insVar->execute([$product_id, $specifications, $srp]);
+            $variant_id = $conn->lastInsertId();
+
+            $histStmt = $conn->prepare("INSERT INTO product_history (variant_id, old_name, new_name, old_specs, new_specs, old_srp, new_srp) VALUES (?, ?, ?, ?, ?, ?, ?)");
+            $histStmt->execute([
+                $variant_id, 
+                'NEW PRODUCT ENTRY', $product_name, 
+                'NEW SPECIFICATION', $specifications, 
+                null, $srp
+            ]);
 
             $conn->commit();
             ob_end_clean();
             echo json_encode(['status' => 'success']);
 
         } catch (Exception $e) {
-            $conn->rollBack();
+            if ($conn->inTransaction()) {
+                $conn->rollBack();
+            }
             ob_end_clean();
             echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
         }
@@ -904,10 +961,11 @@ try {
     if (isset($_POST['action']) && $_POST['action'] === 'delete_product') {
         $variant_id = $_POST['variant_id'];
         
+        ensureProductHistoryTable($conn);
         $conn->beginTransaction();
+        
         try {
             $conn->prepare("DELETE FROM price_records WHERE variant_id = ?")->execute([$variant_id]);
-            $conn->exec("CREATE TABLE IF NOT EXISTS product_history (id INT AUTO_INCREMENT PRIMARY KEY, variant_id INT)");
             $conn->prepare("DELETE FROM product_history WHERE variant_id = ?")->execute([$variant_id]);
             $conn->prepare("DELETE FROM product_variants WHERE id = ?")->execute([$variant_id]);
 
@@ -915,7 +973,9 @@ try {
             ob_end_clean();
             echo json_encode(['status' => 'success']);
         } catch (Exception $e) {
-            $conn->rollBack();
+            if ($conn->inTransaction()) {
+                $conn->rollBack();
+            }
             ob_end_clean();
             echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
         }
