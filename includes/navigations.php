@@ -33,6 +33,10 @@ function getNavStyle($page, $current) {
         /* Magic SPA Loading Styles */
         #spa-main-content { transition: opacity 0.2s ease-in-out; }
         .spa-loading { opacity: 0.4; pointer-events: none; }
+        
+        /* Custom Scrollbar for sidebar if content gets too long */
+        .sidebar-scroll::-webkit-scrollbar { width: 6px; }
+        .sidebar-scroll::-webkit-scrollbar-thumb { background-color: rgba(255,255,255,0.2); border-radius: 10px; }
     </style>
 </head>
 <body style="background-color: #EAEAEA; overflow-x: hidden;">
@@ -60,6 +64,8 @@ function getNavStyle($page, $current) {
                 <li><h6 class="dropdown-header text-secondary fw-bold" style="font-size: 0.7rem; letter-spacing: 0.5px;">ACCOUNT MANAGEMENT</h6></li>
                 <li><a class="dropdown-item py-2 fw-bold text-secondary" href="#" data-bs-toggle="modal" data-bs-target="#adminProfileModal"><i class="bi bi-gear me-2 fs-6"></i> Account Settings</a></li>
                 <li><hr class="dropdown-divider"></li>
+                <li><a class="dropdown-item py-2 fw-bold text-secondary" href="#" data-bs-toggle="modal" data-bs-target="#aboutModal"><i class="bi bi-info-circle me-2 fs-6"></i> About</a></li>
+                <li><hr class="dropdown-divider"></li>
                 <li><a class="dropdown-item py-2 text-danger fw-bold" href="#" onclick="confirmLogout(event)"><i class="bi bi-box-arrow-right me-2 fs-6"></i> Secure Logout</a></li>
             </ul>
         </div>
@@ -70,8 +76,8 @@ function getNavStyle($page, $current) {
             <h5 class="offcanvas-title text-white fw-bold">Admin Menu</h5>
             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas" aria-label="Close"></button>
         </div>
-        <div class="offcanvas-body px-2 py-4">
-            <ul class="nav flex-column">
+        <div class="offcanvas-body px-2 py-4 d-flex flex-column">
+            <ul class="nav flex-column flex-grow-1">
                 <li class="nav-item"><a class="nav-link <?= getNavStyle('dashboard.php', $currentPage) ?>" href="dashboard.php"><i class="bi bi-grid-1x2-fill me-2"></i> Dashboard</a></li>
                 <li class="nav-item"><a class="nav-link <?= getNavStyle('provincial.php', $currentPage) ?>" href="provincial.php"><i class="bi bi-file-earmark-text-fill me-2"></i> Provincial Reports</a></li>
                 <li class="nav-item"><a class="nav-link <?= getNavStyle('regional.php', $currentPage) ?>" href="regional.php"><i class="bi bi-folder-fill me-2"></i> Regional Summary</a></li>
@@ -79,14 +85,20 @@ function getNavStyle($page, $current) {
                 <li class="nav-item"><a class="nav-link <?= getNavStyle('products.php', $currentPage) ?>" href="products.php"><i class="bi bi-tags me-2"></i> Product & SRP</a></li>
                 <li class="nav-item"><a class="nav-link <?= getNavStyle('trends.php', $currentPage) ?>" href="trends.php"><i class="bi bi-graph-up me-2"></i> Price Trends</a></li>
             </ul>
+            
+            <!-- Mobile Sidebar Footer -->
+            <div class="mt-auto text-center px-3" style="font-size: 0.75rem; color: #8a93a2; border-top: 1px solid rgba(255, 255, 255, 0.1); padding-top: 1rem;">
+                &copy; 2026 DTI Region IX Price Monitoring System | Western Mindanao State University - College of Computing Studies
+            </div>
         </div>
     </div>
 
     <div class="container-fluid p-0">
         <div class="row g-0">
             
-            <nav class="col-md-2 d-none d-md-block sidebar py-4" style="min-height: 100vh; background-color: #0A0A3A;">
-                <div class="position-sticky">
+            <!-- Sticky Sidebar Configuration -->
+            <nav class="col-md-2 d-none d-md-flex flex-column sidebar py-4 sidebar-scroll" style="position: sticky; top: 0; height: 100vh; background-color: #0A0A3A; overflow-y: auto;">
+                <div class="flex-grow-1">
                     <h5 class="text-white px-3 pb-2 border-bottom border-secondary">Admin Menu</h5>
                     <ul class="nav flex-column mt-3 px-2">
                         <li class="nav-item"><a class="nav-link <?= getNavStyle('dashboard.php', $currentPage) ?>" href="dashboard.php"><i class="bi bi-grid-1x2-fill me-2"></i> Dashboard</a></li>
@@ -97,6 +109,70 @@ function getNavStyle($page, $current) {
                         <li class="nav-item"><a class="nav-link <?= getNavStyle('trends.php', $currentPage) ?>" href="trends.php"><i class="bi bi-graph-up me-2"></i> Price Trends</a></li>
                     </ul>
                 </div>
+                
+                <!-- Desktop Sidebar Footer -->
+                <div class="mt-auto text-center px-3 pb-3" style="font-size: 0.70rem; color: #8a93a2; border-top: 1px solid rgba(255, 255, 255, 0.1); padding-top: 1rem;">
+                    &copy; 2026 DTI Region IX Price Monitoring System | Western Mindanao State University - College of Computing Studies
+                </div>
             </nav>
 
-            <main class="col-12 col-md-10 content-wrapper p-3 p-md-4" id="spa-main-content">
+            <main class="col-12 col-md-10 content-wrapper p-3 p-md-4" id="spa-main-content"> 
+                <!-- About Modal -->
+                <div class="modal fade" id="aboutModal" tabindex="-1" aria-labelledby="aboutModalLabel" aria-hidden="true">
+                    <div class="modal-dialog modal-dialog-centered modal-lg">
+                        <div class="modal-content" style="border-radius: 12px;">
+                            <div class="modal-header border-0">
+                                <h5 class="modal-title fw-bold text-center w-100" id="aboutModalLabel">About the System</h5>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                            </div>
+                            <div class="modal-body">
+                                <div class="text-center mb-3">
+                                    <div class="d-flex justify-content-center align-items-center gap-3 flex-wrap">
+                                        <img src="../assets/images/DTI_PH-Logo.png" alt="DTI" style="max-height:60px;" class="img-fluid">
+                                        <img src="../assets/images/WMSU-LOGO.png" alt="WMSU" style="max-height:60px;" class="img-fluid">
+                                        <img src="../assets/images/CCSLOGO.png" alt="CCS" style="max-height:60px;" class="img-fluid">
+                                        <img src="../assets/images/comsci_logo.png" alt="CS" style="max-height:60px;" class="img-fluid">
+                                    </div>
+                                </div>
+
+                                <div class="mx-auto" style="max-width:720px;">
+                                    <p class="text-center text-muted mb-4">The DTI Region IX Price Monitoring System provides tools for monitoring retail prices, generating reports, and visualizing price trends to support market monitoring, consumer protection, and evidence-based policy decisions.</p>
+
+                                    <div class="p-3 rounded-3" style="background-color:#F7F8FA;">
+                                        <h6 class="text-primary text-center fw-bold" style="letter-spacing:1px;">DEVELOPMENT &amp; ADVISORY TEAM</h6>
+                                        <div class="row mt-3 text-center">
+                                            <div class="col-12 text-center">
+                                                <h5 class="fw-bold">ASSO. PROF. SALIMAR B. TAHIL</h5>
+                                                <div class="text-muted">Project Manager<br>ACTINT 122 Adviser, College of Computing Studies<br>Western Mindanao State University</div>
+                                            </div>
+                                        </div>
+                                        <hr>
+                                        <div class="row mt-2">
+                                            <div class="col-12 text-center">
+                                                <h5 class="fw-bold">SHARON B. BAZAN-MICUBO</h5>
+                                                <div class="text-muted">HTE Coordinator <br>Administrative Officer V (HRMO III)<br>DTI – IX Regional Office IX</div>
+                                            </div>
+                                        </div>
+                                        <hr>
+                                        <div class="row mt-2">
+                                            <div class="col-12 text-center">
+                                                <h5 class="fw-bold">KEVIN ROSS P. TAMPIOC</h5>
+                                                <div class="text-muted">Project Adviser<br>Trade-Industry Development Specialist (TIDS)</div>
+                                            </div>
+                                        </div>
+                                        <hr>
+                                        <div class="row mt-2">
+                                            <div class="col-12 text-center">
+                                                <h5 class="fw-bold">KHEM M. PALIQUERON</h5>
+                                                <div class="text-muted">System Developer / Author<br>Student Intern, BS in Computer Science, 2nd yr<br>Western Mindanao State University</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="modal-footer border-0 justify-content-center">
+                                <small class="text-muted"> &copy; 2026 DTI Region IX Price Monitoring System | Western Mindanao State University - College of Computing Studies</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>

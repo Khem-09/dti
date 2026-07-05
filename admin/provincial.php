@@ -150,10 +150,6 @@
             $current_preview_year = $fileRow['target_year'];
         }
     }
-
-    // -------------------------------------------------------------
-    // PULL IN THE MASTER HTML LAYOUT (Head, Top Nav, Sidebars)
-    // -------------------------------------------------------------
     include '../includes/navigations.php';
 ?>
 
@@ -451,12 +447,46 @@
                             </tr>
                         </thead>
                         <tbody id="provincesTableBody">
-                            </tbody>
+                            <?php
+                                $provTotal = count($provinces);
+                                if ($provTotal === 0) {
+                                    echo '<tr><td colspan="4" class="text-center py-4 text-secondary">No provinces found.</td></tr>';
+                                } else {
+                                    $firstPageItems = array_slice($provinces, 0, 5);
+                                    foreach ($firstPageItems as $p) {
+                                        $aliasesDisplay = !empty($p['aliases']) ? htmlspecialchars($p['aliases']) : '<span class="text-muted">None</span>';
+                                        $safeName = htmlspecialchars($p['province_name']);
+                                        $safeAliases = htmlspecialchars($p['aliases'] ?? '');
+                                        echo "<tr>\n".
+                                             "<td class=\"fw-bold text-secondary\">".htmlspecialchars($p['id'])."</td>\n".
+                                             "<td class=\"fw-bold text-dark\">{$safeName}</td>\n".
+                                             "<td class=\"text-secondary fst-italic\">{$aliasesDisplay}</td>\n".
+                                             "<td class=\"text-center\">\n".
+                                             "<div class=\"btn-group shadow-sm\">\n".
+                                             "<button type=\"button\" class=\"btn btn-sm btn-outline-primary fw-bold\" onclick=\"openEditProvinceModal({$p['id']}, '{$safeName}', '{$safeAliases}')\">\n".
+                                             "<i class=\"bi bi-pencil-square\"></i>\n".
+                                             "</button>\n".
+                                             "<button type=\"button\" class=\"btn btn-sm btn-outline-danger fw-bold\" onclick=\"deleteProvince({$p['id']})\">\n".
+                                             "<i class=\"bi bi-trash\"></i>\n".
+                                             "</button>\n".
+                                             "</div>\n".
+                                             "</td>\n".
+                                             "</tr>\n";
+                                    }
+                                }
+                            ?>
+                        </tbody>
                     </table>
                 </div>
 
                 <div class="d-flex justify-content-between align-items-center mt-3 px-1 gap-2">
-                    <span class="text-secondary fw-bold small" id="provPageInfo">Loading...</span>
+                    <?php
+                        $provTotal = count($provinces);
+                        $provStart = $provTotal === 0 ? 0 : 1;
+                        $provEnd = min(5, $provTotal);
+                        $provInfoText = "Showing {$provStart} to {$provEnd} of {$provTotal}";
+                    ?>
+                    <span class="text-secondary fw-bold small" id="provPageInfo"><?= htmlspecialchars($provInfoText) ?></span>
                     <div class="btn-group shadow-sm">
                         <button type="button" class="btn btn-sm btn-outline-secondary fw-bold" onclick="prevProvPage()" id="provPrevBtn" disabled>Prev</button>
                         <button type="button" class="btn btn-sm btn-outline-secondary fw-bold" onclick="nextProvPage()" id="provNextBtn" disabled>Next</button>
